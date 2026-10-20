@@ -30,17 +30,17 @@ class InstallTests(unittest.TestCase):
     def git(self, *args, cwd=None):
         subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
-    def make_repo(self, name: str) -> Path:
+    def make_repo(self, name: str, branch: str = "main", commit: bool = True) -> Path:
         repo = self.root / name
         remote = self.root / (name + ".git")
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        self.git("config", "user.email", "t@example.com", cwd=repo)
-        self.git("config", "user.name", "Test", cwd=repo)
-        self.git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
-        self.git("branch", "-M", "main", cwd=repo)
+        subprocess.run(["git", "init", "-q", "-b", branch, str(repo)], check=True)
         self.git("remote", "add", "origin", str(remote), cwd=repo)
-        self.git("push", "-q", "-u", "origin", "main", cwd=repo)
+        if commit:
+            self.git("config", "user.email", "t@example.com", cwd=repo)
+            self.git("config", "user.name", "Test", cwd=repo)
+            self.git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+            self.git("push", "-q", "-u", "origin", branch, cwd=repo)
         return repo
 
     def install(self, repo: Path, *args):
@@ -84,6 +84,20 @@ class InstallTests(unittest.TestCase):
         learnings = (repo / ".agents" / "memory" / "learnings.md").read_text(encoding="utf-8")
         self.assertIn("kept this entry across a reinstall", learnings)
         self.assertTrue(list(repo.glob(".agents-backup-*")), "no backup directory was kept")
+
+    def test_unborn_repo_explains_the_first_commit(self):
+        repo = self.make_repo("fresh", commit=False)
+        result = self.install(repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no commits", result.stderr)
+        self.assertIn("git commit --allow-empty", result.stderr)
+
+    def test_install_uses_the_branch_the_repo_is_on(self):
+        repo = self.make_repo("legacy", branch="master")
+        result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn('base_branch = "master"', config)
 
     def test_frequency_collision_is_refused(self):
         first = self.make_repo("app")

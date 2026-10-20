@@ -33,6 +33,20 @@ directory name), `~/.config/zolly/<freq>/credentials`, and the systemd unit. A
 second project gets a second office; the binary is the only machine-wide piece,
 installed once.
 
+A brand-new folder needs a repository **and one commit** first — the office
+needs a base branch to cut task branches from:
+
+```sh
+mkdir -p ~/Projects/my-app && cd ~/Projects/my-app
+git init -b main
+git commit --allow-empty -m init
+curl -fsSL https://raw.githubusercontent.com/khanshifaul/zolly/main/install.sh \
+  | bash -s -- --founder "Your Name"
+```
+
+If the repo is already on a branch other than `main` (for example `master`),
+the installer uses that branch unless you pass `--base-branch`.
+
 To pin a release, use a tag in the script URL and tell the installer to fetch
 the matching archive:
 
