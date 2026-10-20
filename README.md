@@ -10,7 +10,7 @@ on the machine consumes the same binary plus a small per-project skeleton.
 
 That writes `~/Projects/my-app/.agents/` — the office kit — and prints the
 follow-ups it will not do for you (Telegram credentials, the systemd unit, the
-`zolly` shell block).
+seat command).
 
 ## Install with one command
 
@@ -225,22 +225,13 @@ zolly init        # start the foreman and pr-reviewer seats
 `zolly init` opens two seats, joins them to the project's radio frequency, and
 delivers each seat's boot prompt followed by its persona.
 
-Then bind your own pane to the bus — the installer prints this block, ready to
-paste into `~/.zshrc`:
+Then sit down. In the project, bare `zolly` joins the office's bus and starts
+`omp` with the manager persona (`@.agents/zolly/agent.md`). `zolly <command>`
+still runs the CLI, and bare `zolly` outside an office says so instead of
+seating.
 
-```sh
-zolly() {
-  # Bare `zolly` is the seat: join the office's bus, then start omp with the
-  # manager persona. `zolly <command>` still runs the CLI unchanged.
-  if [ "$#" -gt 0 ]; then command zolly "$@"; return; fi
-  # ...radio join zolly --frequency <freq> --role "Manager of the <project> office"...
-  omp @.agents/zolly/agent.md
-}
-```
-
-Bare `zolly` therefore seats you; `zolly doctor`, `zolly init` and every other
-subcommand are unaffected. Scripts and non-interactive shells call the binary
-directly, where bare `zolly` still prints its help.
+The installer no longer prints a shell block for `~/.zshrc`: the seat lives in
+the binary, so it works in any shell, in a script, and in a fresh terminal.
 
 ## What the office needs from your project
 
