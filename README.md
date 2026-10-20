@@ -33,19 +33,24 @@ directory name), `~/.config/zolly/<freq>/credentials`, and the systemd unit. A
 second project gets a second office; the binary is the only machine-wide piece,
 installed once.
 
-A brand-new folder needs a repository **and one commit** first — the office
-needs a base branch to cut task branches from:
+A brand-new folder needs nothing first: the installer initializes an empty
+directory itself. If you prefer to create the repo, `git init` is enough — no
+commit is required.
 
 ```sh
 mkdir -p ~/Projects/my-app && cd ~/Projects/my-app
-git init -b main
-git commit --allow-empty -m init
 curl -fsSL https://raw.githubusercontent.com/khanshifaul/zolly/main/install.sh \
   | bash -s -- --founder "Your Name"
 ```
 
-If the repo is already on a branch other than `main` (for example `master`),
-the installer uses that branch unless you pass `--base-branch`.
+An empty directory is initialized on `main` (or the branch passed with
+`--base-branch`). A non-empty directory that is not already a repository is
+left untouched and refused. If the repo is on `master`, the installer uses
+`master` unless you pass `--base-branch`.
+
+Installation needs no commit. The **first task** does: task branches are cut
+from the base branch, so make the project's first commit when there is
+something to commit.
 
 To pin a release, use a tag in the script URL and tell the installer to fetch
 the matching archive:

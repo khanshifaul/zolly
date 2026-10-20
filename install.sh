@@ -143,44 +143,60 @@ stray_env=$(find "$TEMPLATE" -name '.env' -o -name '*.env' | head -20)
 # ---------------------------------------------------------------------------
 step "preconditions"
 
-git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || die "target is not a git repository: $TARGET
-  run: cd $TARGET && git init -b $BASE_BRANCH"
-say "ok   git repository: $TARGET"
+if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
+  # A blank folder is the normal way to start a project: initialize it rather
+  # than making the user run git first. A non-empty tree that is not a repo is
+  # left alone — creating a repo inside someone's files is not ours to do.
+  if [ -z "$(ls -A "$TARGET" 2>/dev/null)" ]; then
+    git -C "$TARGET" init -q -b "$BASE_BRANCH" || die "could not initialize git in $TARGET"
+    say "ok   initialized git repository on $BASE_BRANCH"
+  else
+    die "target is not a git repository: $TARGET
+  run: cd $TARGET && git init -b $BASE_BRANCH
+  (only an empty directory is initialized automatically)"
+  fi
+else
+  say "ok   git repository: $TARGET"
+fi
 
 if [ -e "$TARGET/.agents" ] && [ "$FORCE" -ne 1 ]; then
   die "$TARGET/.agents already exists — re-run with --force to overwrite it"
 fi
 
-# A fresh `git init` has an unborn branch: no ref exists, so neither the base
-# branch nor a worktree base can be resolved. Name the exact commands.
-if ! git -C "$TARGET" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-  die "the repository has no commits yet, so '$BASE_BRANCH' does not exist.
-  Run:
-    cd $TARGET
-    git config user.name \"Your Name\"
-    git config user.email \"you@example.com\"
-    git commit --allow-empty -m init
-    git branch -M $BASE_BRANCH
-  then re-run this installer."
-fi
+# Unborn branch: `git init` is enough. There is no ref to verify, so take the
+# branch git is on, and honour an explicit --base-branch by renaming the
+# pending branch (safe before the first commit).
+UNBORN=0
+git -C "$TARGET" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || UNBORN=1
 
-# No --base-branch given: use the branch the repo is on. `git init` can create
-# `master`, and hardcoding `main` would fail a repository that works fine.
-if [ "$EXPLICIT_BASE" -eq 0 ]; then
+if [ "$UNBORN" -eq 1 ]; then
   HEAD_BRANCH=$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-  if [ -n "$HEAD_BRANCH" ] && [ "$HEAD_BRANCH" != "$BASE_BRANCH" ] \
-     && ! git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
-    say "note no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
-    BASE_BRANCH="$HEAD_BRANCH"
+  [ -n "$HEAD_BRANCH" ] || HEAD_BRANCH="$BASE_BRANCH"
+  if [ "$EXPLICIT_BASE" -eq 1 ] && [ "$HEAD_BRANCH" != "$BASE_BRANCH" ]; then
+    git -C "$TARGET" symbolic-ref HEAD "refs/heads/$BASE_BRANCH" \
+      || die "could not switch the unborn branch to $BASE_BRANCH"
+    HEAD_BRANCH="$BASE_BRANCH"
   fi
-fi
-
-# The office merges into the integration branch, so the branch has to exist
-# locally and match the remote. Same guard `zolly foreman` enforces.
-if git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
-  say "ok   branch: $BASE_BRANCH"
+  if [ "$HEAD_BRANCH" != "$BASE_BRANCH" ]; then
+    say "note no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
+  fi
+  BASE_BRANCH="$HEAD_BRANCH"
+  say "ok   branch: $BASE_BRANCH (no commits yet)"
 else
-  die "branch '$BASE_BRANCH' does not exist in $TARGET — create it (git branch $BASE_BRANCH), or pass --base-branch <existing>"
+  # Commits exist. With no --base-branch, use the branch the repo is on.
+  if [ "$EXPLICIT_BASE" -eq 0 ]; then
+    HEAD_BRANCH=$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if [ -n "$HEAD_BRANCH" ] && [ "$HEAD_BRANCH" != "$BASE_BRANCH" ] \
+       && ! git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
+      say "note no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
+      BASE_BRANCH="$HEAD_BRANCH"
+    fi
+  fi
+  if git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
+    say "ok   branch: $BASE_BRANCH"
+  else
+    die "branch '$BASE_BRANCH' does not exist in $TARGET — create it (git branch $BASE_BRANCH), or pass --base-branch <existing>"
+  fi
 fi
 
 if git -C "$TARGET" rev-parse --verify --quiet "$REMOTE/$BASE_BRANCH" >/dev/null 2>&1; then

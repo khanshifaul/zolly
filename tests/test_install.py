@@ -85,12 +85,36 @@ class InstallTests(unittest.TestCase):
         self.assertIn("kept this entry across a reinstall", learnings)
         self.assertTrue(list(repo.glob(".agents-backup-*")), "no backup directory was kept")
 
-    def test_unborn_repo_explains_the_first_commit(self):
+    def test_empty_folder_is_initialized(self):
+        repo = self.root / "blank"
+        repo.mkdir()
+        result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((repo / ".git").is_dir())
+        self.assertTrue((repo / ".agents" / "zolly" / "config.toml").is_file())
+        head = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"], cwd=repo, capture_output=True
+        )
+        self.assertNotEqual(head.returncode, 0, "the installer must not create a commit")
+
+    def test_unborn_repo_installs_without_a_commit(self):
         repo = self.make_repo("fresh", commit=False)
         result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((repo / ".agents").is_dir())
+        head = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"], cwd=repo, capture_output=True
+        )
+        self.assertNotEqual(head.returncode, 0)
+
+    def test_nonempty_folder_that_is_not_a_repo_is_refused(self):
+        repo = self.root / "loose"
+        repo.mkdir()
+        (repo / "notes.txt").write_text("someone's files\n", encoding="utf-8")
+        result = self.install(repo)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("no commits", result.stderr)
-        self.assertIn("git commit --allow-empty", result.stderr)
+        self.assertIn("not a git repository", result.stderr)
+        self.assertFalse((repo / ".git").exists())
 
     def test_install_uses_the_branch_the_repo_is_on(self):
         repo = self.make_repo("legacy", branch="master")
