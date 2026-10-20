@@ -69,7 +69,9 @@ project config resolves.
 
 Then add the printed entry to `~/.omp/agent/mcp.json` under `mcpServers`.
 That file is harness config **shared by every omp pane** — read it first, add one
-entry, leave the other entries untouched, keep it valid JSON.
+entry, leave the other entries untouched, keep it valid JSON. The entry is keyed
+per office (`zolly-<frequency>`), because one unqualified `zolly` entry can only
+reach one office; a second project needs its own entry under its own key.
 
 ## Verify a handshake (not just "the entry exists")
 

@@ -26,8 +26,16 @@
 #   --remote <r>        git remote (default: origin)
 #   --no-systemd        do not write a systemd user unit
 #   --no-binary         do not install the shared binary
+#   --no-mcp            do not deploy the MCP server
+#   --no-telegram       do not configure Telegram
+#   --yes, -y           accept every default; ask nothing
 #   --force             install even if the target already has .agents/
 #   --dry-run           print what would happen, change nothing
+#
+# The install asks before each optional feature — the shared binary, the MCP
+# server, Telegram and the systemd unit. Answer no to skip one. With no
+# terminal (CI, a pipe) every default is used and nothing is asked; --yes
+# takes the defaults without asking.
 #
 # Env:
 #   ZOLLY_TELEGRAM_TOKEN   bot token (prompted if absent and Telegram wanted)
@@ -86,6 +94,12 @@ EXPLICIT_BASE=0
 REMOTE="origin"
 DO_SYSTEMD=1
 DO_BINARY=1
+DO_MCP=1
+DO_TELEGRAM=-1          # -1 ask, 0 no, 1 yes
+ASSUME_YES=0
+BIN_STATE="skipped"
+MCP_STATE="skipped"
+SD_STATE="skipped"
 FORCE=0
 DRY_RUN=0
 
@@ -97,8 +111,55 @@ die() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
 say() { printf '%s\n' "$1"; }
 step() { printf '\n== %s\n' "$1"; }
 
+# Questions read from the terminal, never stdin: when the installer is piped,
+# stdin is the script itself. No terminal (CI) means the default answer, so a
+# prompt can never hang a non-interactive run.
+can_ask() {
+  [ "$ASSUME_YES" -eq 0 ] || return 1
+  # stderr is redirected first: a missing or unusable /dev/tty would print a
+  # shell error into the install log.
+  tty 2>/dev/null >/dev/null </dev/tty
+}
+
+# ask_yn <question> <y|n> — prints y or n. The default is used when there is
+# no terminal or when the answer is empty.
+ask_yn() {
+  ask_q="$1"; ask_def="$2"
+  if ! can_ask; then printf '%s\n' "$ask_def"; return 0; fi
+  if [ "$ask_def" = y ]; then ask_sfx='[Y/n]'; else ask_sfx='[y/N]'; fi
+  printf '%s %s ' "$ask_q" "$ask_sfx" >/dev/tty
+  if read -r ask_ans </dev/tty 2>/dev/null; then :; else ask_ans=""; fi
+  [ -n "$ask_ans" ] || ask_ans="$ask_def"
+  case "$ask_ans" in y|Y|yes|YES) printf 'y\n' ;; *) printf 'n\n' ;; esac
+}
+
+# ask_text <question> [default] — prints one line read from the terminal.
+ask_text() {
+  ask_q="$1"; ask_def="${2:-}"
+  if ! can_ask; then printf '%s\n' "$ask_def"; return 0; fi
+  printf '%s ' "$ask_q" >/dev/tty
+  if read -r ask_val </dev/tty 2>/dev/null; then :; else ask_val=""; fi
+  [ -n "$ask_val" ] || ask_val="$ask_def"
+  printf '%s\n' "$ask_val"
+}
+
+# ask_secret <question> — prints the line read, with terminal echo off so a
+# token never lands on the screen or in the scrollback.
+ask_secret() {
+  ask_q="$1"
+  if ! can_ask; then printf '\n'; return 0; fi
+  printf '%s ' "$ask_q" >/dev/tty
+  ask_stty=$(stty -g </dev/tty 2>/dev/null || true)
+  [ -n "$ask_stty" ] && stty -echo </dev/tty 2>/dev/null || true
+  if read -r ask_val </dev/tty 2>/dev/null; then :; else ask_val=""; fi
+  [ -n "$ask_stty" ] && stty "$ask_stty" </dev/tty 2>/dev/null || true
+  printf '\n' >/dev/tty
+  printf '%s\n' "$ask_val"
+}
+
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  # Everything from line 2 to `set -eu` is the header; no hardcoded range.
+  sed -n '2,/^set -eu$/p' "$0" | sed -e 's/^# \{0,1\}//' -e '/^set -eu$/d'
   exit "${1:-0}"
 }
 
@@ -113,6 +174,9 @@ while [ $# -gt 0 ]; do
     --remote)       REMOTE="${2:-}"; shift 2 ;;
     --no-systemd)   DO_SYSTEMD=0; shift ;;
     --no-binary)    DO_BINARY=0; shift ;;
+    --no-mcp)       DO_MCP=0; shift ;;
+    --no-telegram)  DO_TELEGRAM=0; shift ;;
+    --yes|-y)       ASSUME_YES=1; shift ;;
     --force)        FORCE=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
     -h|--help)      usage 0 ;;
@@ -229,9 +293,7 @@ say "ok   frequency: $FREQ"
 say "ok   project:   $PROJECT_NAME"
 
 if [ -z "$FOUNDER" ]; then
-  printf '\nFounder name (the office greets them by it; blank for an office with no Telegram): '
-  read -r FOUNDER || FOUNDER=""
-  printf '\n'
+  FOUNDER=$(ask_text "Founder name (the office greets them by it; blank for an office with no Telegram):")
 fi
 [ -n "$FOUNDER" ] || say "warn no founder name — the office runs without Telegram greetings"
 
@@ -505,23 +567,24 @@ if [ "$DO_BINARY" -eq 0 ]; then
   say "skip binary (--no-binary)"
 elif [ -x "$BIN_DEST" ]; then
   say "ok   already installed: $BIN_DEST"
+  BIN_STATE="installed"
 else
   # The Rust source is not part of this kit. ZOLLY_TOOL_DIR is the only
   # location the installer assumes; a sibling checkout is not guessed.
-  if [ -n "${ZOLLY_TOOL_DIR:-}" ]; then
-    TOOL_DIR="$ZOLLY_TOOL_DIR"
-  else
-    TOOL_DIR=""
-  fi
+  TOOL_DIR="${ZOLLY_TOOL_DIR:-}"
   if [ -n "$TOOL_DIR" ] && [ -f "$TOOL_DIR/Cargo.toml" ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then
+    if [ "$(ask_yn "Install the shared zolly binary now? (built from $TOOL_DIR)" y)" = n ]; then
+      say "skip binary (declined)"
+    elif [ "$DRY_RUN" -eq 1 ]; then
       say "would build $TOOL_DIR and install to $BIN_DEST"
+      BIN_STATE="planned"
     else
       say "building the tool (this takes a minute)..."
       ( cd "$TOOL_DIR" && cargo build --release ) || die "cargo build failed in $TOOL_DIR"
       mkdir -p "$(dirname "$BIN_DEST")"
       install -m 0755 "$TOOL_DIR/target/release/zolly" "$BIN_DEST"
       say "ok   installed $BIN_DEST"
+      BIN_STATE="installed"
     fi
   else
     die "no Rust tool source found — set ZOLLY_TOOL_DIR to the crate, or install the binary at $BIN_DEST and re-run with --no-binary"
@@ -545,14 +608,21 @@ fi
 
 if [ ! -f "$MCP_SRC" ] || [ ! -f "$MCP_INSTALLER" ]; then
   say "skip MCP (missing $MCP_SRC or its install.sh)"
+elif [ "$DO_MCP" -ne 1 ]; then
+  say "skip MCP (--no-mcp)"
 elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
   say "ok   MCP server already deployed and identical: $MCP_DEST"
+  MCP_STATE="installed"
+elif [ "$(ask_yn "Deploy the MCP server to $MCP_DEST and print this office's client entry?" y)" = n ]; then
+  say "skip MCP (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would deploy the MCP server to $MCP_DEST"
+  MCP_STATE="planned"
 else
   # One deployer, not two. The component prints the canonical mcp.json entry;
   # a copy of that text here is how the two installers drift apart.
   sh "$MCP_INSTALLER" "$MCP_DEST" --frequency "$FREQ" --root "$TARGET"
+  MCP_STATE="installed"
 fi
 
 # ---------------------------------------------------------------------------
@@ -566,27 +636,40 @@ CRED_FILE="$CRED_DIR/credentials"
 TOKEN="${ZOLLY_TELEGRAM_TOKEN:-}"
 IDS="${ZOLLY_ALLOWED_IDS:-}"
 HAVE_CREDS=0
+TG_STATE="off"
 
-if [ -n "$FOUNDER" ] && { [ -z "$TOKEN" ] || [ -z "$IDS" ]; }; then
+# Credentials already on disk belong to this frequency — the collision check
+# binds a frequency to a project — so reuse them before asking. One bot token
+# per office: two listeners sharing a token both call getUpdates and Telegram
+# answers 409, so a second office needs its own bot.
+if [ -z "$TOKEN" ] || [ -z "$IDS" ]; then
   if [ -f "$CRED_FILE" ]; then
     say "ok   credentials already exist: $CRED_FILE"
-    TOKEN=$(sed -n 's/^ZOLLY_TELEGRAM_TOKEN=//p' "$CRED_FILE")
-    IDS=$(sed -n 's/^ZOLLY_ALLOWED_IDS=//p' "$CRED_FILE")
-  else
-    if [ -t 0 ]; then
-      printf '\nTelegram bot token (from @BotFather; blank to skip Telegram): '
-      read -r TOKEN || TOKEN=""
-      printf 'Allowed Telegram user ids (comma separated; blank to skip): '
-      read -r IDS || IDS=""
-      printf '\n'
-    else
-      say "warn no Telegram token — the office runs without Telegram"
-    fi
+    [ -n "$TOKEN" ] || TOKEN=$(sed -n 's/^ZOLLY_TELEGRAM_TOKEN=//p' "$CRED_FILE")
+    [ -n "$IDS" ] || IDS=$(sed -n 's/^ZOLLY_ALLOWED_IDS=//p' "$CRED_FILE")
   fi
 fi
 
-if [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
+WANT_TELEGRAM=0
+if [ "$DO_TELEGRAM" -eq 0 ]; then
+  say "skip Telegram (--no-telegram)"
+else
+  if [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
+    WANT_TELEGRAM=1
+  elif [ "$(ask_yn "Configure Telegram for this office? (each office needs its own bot token)" n)" = y ]; then
+    WANT_TELEGRAM=1
+  else
+    say "skip Telegram (declined) — add a token later at $CRED_FILE"
+  fi
+  if [ "$WANT_TELEGRAM" -eq 1 ]; then
+    [ -n "$TOKEN" ] || TOKEN=$(ask_secret "Telegram bot token for this office (from @BotFather; blank to skip):")
+    [ -n "$IDS" ] || IDS=$(ask_text "Allowed Telegram user ids (comma separated; blank to skip):")
+  fi
+fi
+
+if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
   HAVE_CREDS=1
+  TG_STATE="configured"
   if [ "$DRY_RUN" -eq 1 ]; then
     say "would write $CRED_FILE"
   else
@@ -608,8 +691,8 @@ EOF
     )
     say "ok   credentials written: $CRED_FILE"
   fi
-else
-  say "skip credentials (no token) — add one later at $CRED_FILE"
+elif [ "$WANT_TELEGRAM" -eq 1 ]; then
+  say "skip credentials (no token and ids) — add them later at $CRED_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -621,10 +704,14 @@ UNIT_FILE="$SERVICE_DIR/zolly@$FREQ.service"
 
 if [ "$DO_SYSTEMD" -ne 1 ]; then
   say "skip systemd (--no-systemd)"
+elif [ "$DO_TELEGRAM" -eq 0 ]; then
+  say "skip systemd (Telegram is off)"
 elif [ "$HAVE_CREDS" -ne 1 ]; then
   # A listener with no token would restart-loop. Do not create a unit that
   # cannot work; tell the user how to get one after adding credentials.
   say "skip systemd (no Telegram credentials) — add a token to $CRED_FILE, then re-run with --force"
+elif [ "$(ask_yn "Write the systemd user unit zolly@$FREQ.service for this office?" y)" = n ]; then
+  say "skip systemd (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would write $UNIT_FILE"
 else
@@ -646,6 +733,7 @@ WorkingDirectory=$TARGET
 WantedBy=default.target
 EOF
   say "ok   unit written: $UNIT_FILE"
+  SD_STATE="written"
   say ""
   say "To run it:"
   say "  systemctl --user daemon-reload"
@@ -663,6 +751,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 say "office installed: $AGENTS_DIR"
+say "features: binary $BIN_STATE, MCP $MCP_STATE, Telegram $TG_STATE, systemd $SD_STATE"
 if [ "$UNBORN" -eq 1 ]; then
   say ""
   say "note this repository has no commits yet. Make the first commit before"
@@ -672,7 +761,12 @@ say ""
 say "Next steps (printed, not run — they touch your shell and your services):"
 say ""
 say "1. Check the office:"
-say "     cd $TARGET && $BIN_DEST doctor"
+if [ "$BIN_STATE" = "installed" ]; then
+  say "     cd $TARGET && $BIN_DEST doctor"
+else
+  say "     no shared binary yet ($BIN_STATE) — build it with ZOLLY_TOOL_DIR=<crate>,"
+  say "     or place it at $BIN_DEST, before steps 1 and 2"
+fi
 say ""
 say "2. Start the seats (foreman + pr-reviewer):"
 say "     cd $TARGET && $BIN_DEST init"

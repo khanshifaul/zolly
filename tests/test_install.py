@@ -3,12 +3,17 @@
 
 Each test builds a real throwaway git repository with a bare remote and a
 throwaway HOME, so no machine-level state is touched. `--no-binary` and
-`--no-systemd` keep the run offline and side-effect-free.
+`--no-systemd` keep the run offline and side-effect-free; `--yes` keeps every
+run non-interactive, and one test drives the prompts on a real pty.
 """
 
 import os
+import pty
+import select
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -44,12 +49,15 @@ class InstallTests(unittest.TestCase):
         return repo
 
     def install(self, repo: Path, *args):
+        # --yes: the suite must never block on a prompt when it runs from a
+        # terminal; start_new_session drops /dev/tty as well.
         return subprocess.run(
-            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", *args],
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes", "--founder", "Test", *args],
             env=self.env,
             capture_output=True,
             text=True,
             timeout=60,
+            start_new_session=True,
         )
 
     def test_fresh_install_creates_the_kit(self):
@@ -123,8 +131,9 @@ class InstallTests(unittest.TestCase):
     def test_no_credentials_skips_the_listener_unit(self):
         repo = self.make_repo("app")
         result = subprocess.run(
-            [str(INSTALL), str(repo), "--no-binary", "--founder", "Test"],
+            [str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test"],
             env=self.env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("skip systemd (no Telegram credentials)", result.stdout)
@@ -138,8 +147,9 @@ class InstallTests(unittest.TestCase):
         repo = self.make_repo("app")
         env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
         result = subprocess.run(
-            [str(INSTALL), str(repo), "--no-binary", "--founder", "Test"],
+            [str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test"],
             env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         cred_dir = self.home / ".config" / "zolly" / "app"
@@ -157,6 +167,89 @@ class InstallTests(unittest.TestCase):
         clash = self.install(second)
         self.assertNotEqual(clash.returncode, 0)
         self.assertIn("already belongs", clash.stderr)
+
+
+    def test_no_mcp_flag_skips_the_deployment(self):
+        repo = self.make_repo("app")
+        result = self.install(repo, "--no-mcp")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skip MCP (--no-mcp)", result.stdout)
+        self.assertFalse((self.home / ".local" / "bin" / "zolly-mcp").exists())
+
+    def test_no_telegram_flag_skips_credentials_and_unit(self):
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--no-telegram", "--yes", "--founder", "Test"],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skip Telegram (--no-telegram)", result.stdout)
+        self.assertIn("skip systemd (Telegram is off)", result.stdout)
+        self.assertFalse((self.home / ".config" / "zolly" / "app" / "credentials").exists())
+        self.assertFalse(
+            (self.home / ".config" / "systemd" / "user" / "zolly@app.service").exists()
+        )
+
+    def test_yes_installs_with_defaults_and_asks_nothing(self):
+        repo = self.make_repo("app")
+        result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # No prompt text may reach the log when the defaults are taken.
+        self.assertNotIn("[Y/n]", result.stdout)
+        self.assertNotIn("[y/N]", result.stdout)
+        # MCP is a default-yes feature; Telegram is a default-no feature.
+        self.assertTrue((self.home / ".local" / "bin" / "zolly-mcp").is_file())
+        self.assertFalse((self.home / ".config" / "zolly" / "app" / "credentials").exists())
+        self.assertIn("skip Telegram (declined)", result.stdout)
+
+    def run_in_pty(self, argv, answers, timeout=60):
+        """Run argv on a pty so /dev/tty is a terminal; feed it `answers`."""
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execvpe(argv[0], argv, self.env)
+            finally:
+                os._exit(127)
+        out = b""
+        status = None
+        try:
+            os.write(fd, answers)
+            deadline = time.time() + timeout
+            while True:
+                if time.time() > deadline:
+                    os.kill(pid, signal.SIGKILL)
+                    self.fail("interactive install did not finish in time")
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if not ready:
+                    continue
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            _, status = os.waitpid(pid, 0)
+        finally:
+            os.close(fd)
+        code = os.WEXITSTATUS(status) if status is not None and os.WIFEXITED(status) else -1
+        return code, out.decode("utf-8", "replace")
+
+    def test_interactive_answers_can_skip_features(self):
+        repo = self.make_repo("app")
+        code, text = self.run_in_pty(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            b"n\nn\n",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertIn("Deploy the MCP server", text)
+        self.assertIn("Configure Telegram for this office?", text)
+        self.assertIn("skip MCP (declined)", text)
+        self.assertIn("skip Telegram (declined)", text)
+        self.assertFalse((self.home / ".local" / "bin" / "zolly-mcp").exists())
+        self.assertFalse((self.home / ".config" / "zolly" / "app" / "credentials").exists())
 
 
 if __name__ == "__main__":

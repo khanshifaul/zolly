@@ -96,6 +96,27 @@ Every seat carries the frequency on herdr, the manager included
 (`zolly-my-app`); radio handles stay unprefixed because the bus is scoped to the
 frequency already.
 
+Each project gets its **own** `zolly@<frequency>.service` instance, credentials
+file, working directory, radio frequency, and seat names
+(`zolly-<freq>`, `foreman-<freq>`, `pr-reviewer-<freq>`). They run
+independently; nothing is shared except the `~/.local/bin/zolly` binary.
+
+### Where two offices can still collide
+
+1. **Telegram token.** The unit is per frequency; the bot token is not. Two
+   offices configured with the *same* token both call `getUpdates`, and
+   Telegram answers `409 Conflict` — only one receives updates. Use a distinct
+   bot per office, or run one listener and route.
+2. **MCP registration.** There is one deployed `zolly-mcp`, but the client
+   entry must be per office: `ZOLLY_MCP_AGENT=zolly-<freq>`,
+   `ZOLLY_ROOT=<project>`. The installer prints the entry keyed
+   `zolly-<freq>`; register one entry per office under a distinct key. A single
+   unqualified `zolly` entry reaches only one office.
+
+Frequency collisions (e.g. `guzia-high-school` vs `Guzia High School`) are
+refused by the installer, so unit and credential paths cannot silently override
+each other.
+
 ## Trust model
 
 All offices on one machine run as **the same OS user**. The frequency separates
@@ -146,6 +167,13 @@ founder by the wrong name is worse than one that says nothing.
 install.sh [target-dir] [options]
 ```
 
+**Interactive by default.** The installer asks before each optional feature —
+the shared binary, the MCP server, Telegram, and the systemd unit — and any
+answer of "no" skips just that feature. Questions are read from the terminal
+(`/dev/tty`), not stdin, so the `curl | bash` form still prompts. With no
+terminal at all (CI, a pipe) every default is used and nothing blocks;
+`--yes` takes the same defaults without asking.
+
 | Option | Meaning |
 |---|---|
 | `--name <freq>` | radio frequency (default: the target directory name) |
@@ -154,8 +182,17 @@ install.sh [target-dir] [options]
 | `--remote <r>` | git remote (default: `origin`) |
 | `--no-systemd` | do not write a systemd user unit |
 | `--no-binary` | do not install the shared binary |
+| `--no-mcp` | do not deploy the MCP server |
+| `--no-telegram` | do not configure Telegram for this office |
+| `--yes`, `-y` | accept every default; ask nothing |
 | `--force` | install even if the target already has `.agents/` |
 | `--dry-run` | print what would happen, change nothing |
+
+Defaults per feature: binary **yes**, MCP **yes**, Telegram **no**, systemd
+**yes** when credentials exist. `--yes` therefore installs the office and the
+binary and leaves Telegram off unless `ZOLLY_TELEGRAM_TOKEN` and
+`ZOLLY_ALLOWED_IDS` are set. Pass `--founder` with `--yes` — `zolly doctor`
+fails on an office with no founder name.
 
 Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER`,
 `ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`,

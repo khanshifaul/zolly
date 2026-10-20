@@ -31,17 +31,19 @@ install -m 0755 "$HERE/zolly_mcp.py" "$DEST"
 echo "installed: $DEST"
 
 ENV_JSON=""
+ENTRY_KEY="zolly"
 if [ -n "$FREQ" ]; then
+  ENTRY_KEY="zolly-$FREQ"
   ENV_JSON=",
       \"env\": { \"ZOLLY_MCP_AGENT\": \"zolly-$FREQ\", \"ZOLLY_ROOT\": \"${ROOT:-.}\" }"
 fi
 
 echo
-echo "Add this to ~/.omp/agent/mcp.json under \"mcpServers\" (one entry;"
-echo "leave the other entries untouched):"
+echo "Add this to ~/.omp/agent/mcp.json under \"mcpServers\" — one entry per"
+echo "office, under its own key; leave the other entries untouched:"
 echo
 cat <<JSON
-    "zolly": {
+    "$ENTRY_KEY": {
       "type": "stdio",
       "command": "$DEST",
       "args": [],

@@ -30,7 +30,7 @@ jobs:
           git -C "$tmp/app" config user.name Test
           git -C "$tmp/app" commit -q --allow-empty -m init
           git -C "$tmp/app" branch -M main
-          HOME="$tmp/home" dash ./install.sh "$tmp/app" --no-binary --no-systemd --founder Test
+          HOME="$tmp/home" dash ./install.sh "$tmp/app" --no-binary --no-systemd --yes --founder Test
           if grep -rn '{{[A-Z_]*}}' "$tmp/app/.agents" --include='*.md' --include='*.toml'; then
             echo "::error::placeholder substitution failed under dash"
             exit 1
