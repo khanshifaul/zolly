@@ -3,7 +3,7 @@
 #
 # One machine-wide binary, N per-project skeletons:
 #
-#   ~/.local/bin/zolly      built once from zylosync/.agents/zolly/tool
+#   ~/.local/bin/zolly      built from the Rust tool source (or --no-binary)
 #   <project>/.agents/      the office kit, materialized from this template
 #
 # The office is per-project: its radio frequency is the project's name, its
@@ -473,19 +473,12 @@ if [ "$DO_BINARY" -eq 0 ]; then
 elif [ -x "$BIN_DEST" ]; then
   say "ok   already installed: $BIN_DEST"
 else
-  # The crate lives in the factory repo (zylosync). Look for it relative to
-  # this kit first, so a clone placed next to the factory needs no environment
-  # variable; the ~/Projects path stays as the last fallback for this machine.
+  # The Rust source is not part of this kit. ZOLLY_TOOL_DIR is the only
+  # location the installer assumes; a sibling checkout is not guessed.
   if [ -n "${ZOLLY_TOOL_DIR:-}" ]; then
     TOOL_DIR="$ZOLLY_TOOL_DIR"
   else
     TOOL_DIR=""
-    for cand in \
-      "$SCRIPT_DIR/../zylosync/.agents/zolly/tool" \
-      "$SCRIPT_DIR/../.agents/zolly/tool" \
-      "$HOME/Projects/zylosync/.agents/zolly/tool"; do
-      if [ -f "$cand/Cargo.toml" ]; then TOOL_DIR="$cand"; break; fi
-    done
   fi
   if [ -n "$TOOL_DIR" ] && [ -f "$TOOL_DIR/Cargo.toml" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -498,7 +491,7 @@ else
       say "ok   installed $BIN_DEST"
     fi
   else
-    die "no tool source found beside the kit or under ~/Projects/zylosync — set ZOLLY_TOOL_DIR, or install the binary at $BIN_DEST and re-run with --no-binary"
+    die "no Rust tool source found — set ZOLLY_TOOL_DIR to the crate, or install the binary at $BIN_DEST and re-run with --no-binary"
   fi
 fi
 

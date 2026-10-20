@@ -1,8 +1,8 @@
 # zolly — an installable agent office for any git project
 
-One machine-wide binary, N per-project offices. `zylosync` is the factory where
-the Rust tool is built; every other project on this machine consumes the same
-binary plus a small per-project skeleton.
+One machine-wide binary, N per-project offices. The binary is built from the
+Rust tool source, which is distributed separately from this kit; every project
+on the machine consumes the same binary plus a small per-project skeleton.
 
 ```sh
 ./install.sh ~/Projects/my-app --founder "Your Name"
@@ -55,7 +55,7 @@ installer, no download.
 
 | Path | What it is |
 |---|---|
-| `~/.local/bin/zolly` | the binary, built once from `zylosync/.agents/zolly/tool` |
+| `~/.local/bin/zolly` | the shared binary, installed once |
 | `<project>/.agents/` | the office kit: rules, personas, memory, prompts, skills |
 | `~/.config/zolly/<freq>/credentials` | the Telegram token — machine-local, never in the repo |
 | `~/.config/systemd/user/zolly@<freq>.service` | the Telegram listener for that project |
@@ -66,7 +66,7 @@ Two offices on one machine must not collide. Three mechanisms do that, and they
 are deliberately different:
 
 - **Radio frequency** — the bus an office talks on. It is the project's own
-  name (`zylosync`, `my-app`). Radio handles (`zolly`, `foreman`,
+  name (`my-app`, `other-app`). Radio handles (`zolly`, `foreman`,
   `pr-reviewer`, `worker-<task-id>`) are unique *within* a frequency, so they
   stay unprefixed.
 - **herdr agent name** — the seat's process name. These are unique
@@ -236,7 +236,7 @@ zolly/
 └── .agents/            # the template — the office kit, project-agnostic
 ```
 
-The Rust crate stays in `zylosync/.agents/zolly/tool/`. That is where the
-`zolly close` self-rebuild step makes sense: installed projects have no local
-tool source, so that step **skips** rather than fails, and they use the shared
-binary.
+The Rust tool source is not part of this repository. A project installs the
+shared binary once (`ZOLLY_TOOL_DIR=<crate>`, or a prebuilt `~/.local/bin/zolly`).
+`zolly close`'s self-rebuild step then **skips** rather than fails: installed
+projects have no local tool source, so they use the shared binary.
