@@ -38,9 +38,8 @@ that project: `.agents/`, the frequency (the directory name),
 `~/.config/zolly/<freq>/credentials`, and the systemd unit. A second project
 gets a second office; the binary is the only machine-wide piece, installed once.
 
-The command needs the kit pushed to `main` at that URL. Until it is, both URLs
-return 404; clone the repo and run `./install.sh <target>` instead — same
-installer, no download.
+Both URLs are live: the installer fetches the kit tarball, installs into the
+target, and removes the temporary copy. No clone is left on disk.
 
 ## What you get
 
