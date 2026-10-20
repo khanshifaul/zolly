@@ -228,11 +228,11 @@ paste into `~/.zshrc`:
 
 ```sh
 zolly() {
-  # Bare `zolly` is the seat: join the office's bus, then start omp.
-  # `zolly <command>` still runs the CLI unchanged.
+  # Bare `zolly` is the seat: join the office's bus, then start omp with the
+  # manager persona. `zolly <command>` still runs the CLI unchanged.
   if [ "$#" -gt 0 ]; then command zolly "$@"; return; fi
   # ...radio join zolly --frequency <freq> --role "Manager of the <project> office"...
-  omp
+  omp @.agents/zolly/agent.md
 }
 ```
 
