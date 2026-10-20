@@ -160,6 +160,19 @@ class InstallTests(unittest.TestCase):
             (self.home / ".config" / "systemd" / "user" / "zolly@app.service").is_file()
         )
 
+    def test_force_preserves_a_project_local_tool_source(self):
+        repo = self.make_repo("app")
+        self.assertEqual(self.install(repo).returncode, 0)
+        tool = repo / ".agents" / "zolly" / "tool"
+        (tool / "src").mkdir(parents=True)
+        (tool / "Cargo.toml").write_text('[package]\nname = "probe"\n', encoding="utf-8")
+        (tool / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        result = self.install(repo, "--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((tool / "Cargo.toml").is_file())
+        self.assertTrue((tool / "src" / "main.rs").is_file())
+        self.assertIn("restored the tool source", result.stdout)
+
     def test_frequency_collision_is_refused(self):
         first = self.make_repo("app")
         second = self.make_repo("App")

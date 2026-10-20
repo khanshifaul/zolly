@@ -459,8 +459,11 @@ else
     BACKUP="$TARGET/.agents-backup-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$BACKUP"
     # Keep everything except worktrees and runs: worktrees are checkouts (not
-    # office state) and runs are transient. Everything else is recoverable.
-    ( cd "$AGENTS_DIR" && tar -cf - --exclude=./worktrees --exclude=./runs . ) \
+    # office state) and runs are transient. The tool's target/ is build output
+    # and can be gigabytes, so it is excluded too. Everything else is
+    # recoverable.
+    ( cd "$AGENTS_DIR" && tar -cf - --exclude=./worktrees --exclude=./runs \
+        --exclude=./zolly/tool/target . ) \
       | ( cd "$BACKUP" && tar -xf - )
     ok "previous office saved to $BACKUP"
   fi
@@ -484,6 +487,15 @@ else
     find "$BACKUP/hr" -maxdepth 1 -type f \( -name '*.md' -o -name '*.hired' \) -exec cp {} "$AGENTS_DIR/hr/" \; 2>/dev/null || true
     find "$BACKUP/worker" -maxdepth 1 -type f -name '*.md' ! -name 'generic.md' -exec cp {} "$AGENTS_DIR/worker/" \; 2>/dev/null || true
     ok "restored memory, hires, worker personas and project.md"
+    # A project that keeps the Rust tool source under .agents/zolly/tool (the
+    # factory checkout) must not lose it to --force: it is not part of the
+    # template, and the fresh tree has no copy.
+    if [ -d "$BACKUP/zolly/tool" ]; then
+      mkdir -p "$AGENTS_DIR/zolly/tool"
+      ( cd "$BACKUP/zolly/tool" && tar -cf - --exclude=./target . ) \
+        | ( cd "$AGENTS_DIR/zolly/tool" && tar -xf - )
+      ok "restored the tool source"
+    fi
   fi
   ok "copied office kit"
 fi

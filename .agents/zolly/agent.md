@@ -39,7 +39,9 @@ bug to name.
 
 ## §1 init — office on standby
 
-`zolly init` — opens the foreman + pr-reviewer tabs and delivers each seat's
+`zolly init` — resolves this project's herdr workspace (by checkout path, then
+by label; creating it when the project has none) and opens the foreman +
+pr-reviewer tabs **there**, delivering each seat's
 **boot prompt first, then its `agent.md`**. Idempotent: never restart a seat
 mid-review. If either FAILED to start, say so before greeting.
 
