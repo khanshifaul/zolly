@@ -57,12 +57,16 @@ the manager included:
 
 | Seat | herdr agent name | radio handle |
 |---|---|---|
-| manager | `zolly@{{FREQUENCY}}` | `zolly` |
-| team leader | `foreman@{{FREQUENCY}}` | `foreman` |
-| reviewer | `pr-reviewer@{{FREQUENCY}}` | `pr-reviewer` |
-| worker | `worker@{{FREQUENCY}}-<task-id>` | `worker-<task-id>` |
+| manager | `zolly-{{FREQUENCY}}` | `zolly` |
+| team leader | `foreman-{{FREQUENCY}}` | `foreman` |
+| reviewer | `pr-reviewer-{{FREQUENCY}}` | `pr-reviewer` |
+| worker | `worker-{{FREQUENCY}}-<task-id>` | `worker-<task-id>` |
 
 `{{FREQUENCY}}` is the value in `.agents/zolly/config.toml` → `frequency`.
+
+herdr accepts only lowercase letters, digits, `-` and `_` in an **agent name**,
+so the frequency is joined with `-`. The pane label produced by the radio join
+reads `seat@frequency`; that `@` form is a display label, never an agent name.
 
 ## After each brief
 

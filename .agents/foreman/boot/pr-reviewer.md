@@ -45,7 +45,7 @@ path there is no nonce — the line above is the whole reply.
 
 ## Your names
 
-Your herdr agent name is `pr-reviewer@{{FREQUENCY}}`; your radio handle is
+Your herdr agent name is `pr-reviewer-{{FREQUENCY}}`; your radio handle is
 `pr-reviewer`.
 
 ## What standby means

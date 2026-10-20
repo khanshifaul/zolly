@@ -23,7 +23,7 @@ was booted with. It is the short version; this file is the authoritative one.
 
 ## Your seat name
 
-Your herdr agent name is `pr-reviewer@{{FREQUENCY}}` — herdr agent names are
+Your herdr agent name is `pr-reviewer-{{FREQUENCY}}` — herdr agent names are
 server-global, so the office seats carry the frequency. Your **radio handle** is
 the plain `pr-reviewer`; radio handles are already scoped per frequency.
 

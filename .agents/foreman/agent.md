@@ -37,11 +37,11 @@ the change in a worker's brief instead.
 
 ## Seat names
 
-Your herdr agent name is `foreman@{{FREQUENCY}}` — herdr agent names are
+Your herdr agent name is `foreman-{{FREQUENCY}}` — herdr agent names are
 server-global, so the office seats carry the frequency. Your **radio handle** is
 the plain `foreman`; radio handles are already scoped per frequency. The
-reviewer's herdr name is `pr-reviewer@{{FREQUENCY}}`, radio handle
-`pr-reviewer`. A worker's herdr name is `worker@{{FREQUENCY}}-<task-id>` (server-global, so it
+reviewer's herdr name is `pr-reviewer-{{FREQUENCY}}`, radio handle
+`pr-reviewer`. A worker's herdr name is `worker-{{FREQUENCY}}-<task-id>` (server-global, so it
 carries the frequency); its radio handle is `worker-<task-id>` (scoped by the
 frequency already).
 
@@ -56,7 +56,7 @@ frequency already).
    `herdr worktree create --branch foreman/<task-id> --base {{REMOTE}}/{{BASE_BRANCH}} --path .agents/worktrees/<task-id>`
    gives the worker a clean checkout on a branch.
 3. **Spawn a worker** — join it to the AgentRadio bus first, then start it:
-   `radio join worker-<task-id> --pane <pane-id> --no-launch --frequency {{FREQUENCY}} --role "Worker agent on task <task-id>. Reads a brief from stdin and reports progress. Asks questions via radio pm foreman."` followed by `herdr agent start worker@{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>`, then deliver the brief with `zolly worker-brief` (see the Worker pattern). Never a raw `herdr agent prompt` on a brief: a large paste is held unsubmitted and the dispatch still looks healthy.
+   `radio join worker-<task-id> --pane <pane-id> --no-launch --frequency {{FREQUENCY}} --role "Worker agent on task <task-id>. Reads a brief from stdin and reports progress. Asks questions via radio pm foreman."` followed by `herdr agent start worker-{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>`, then deliver the brief with `zolly worker-brief` (see the Worker pattern). Never a raw `herdr agent prompt` on a brief: a large paste is held unsubmitted and the dispatch still looks healthy.
 4. **Monitor** — follow the worker. Watch for stalls, wrong direction, and
    blocked steps. Answer its questions, adjust the brief, add context. Answer on
    the bus (`radio pm worker-<task-id> '…'`) when the panes are joined.
@@ -90,7 +90,7 @@ You plan, delegate, monitor, report, go idle. Next prompt = next task.
 - `herdr pane send-keys/read/close` for worker panes
 - `herdr agent start` to spawn a worker; `zolly worker-brief` to deliver its brief
   (never a raw `herdr agent prompt` on a multi-line brief)
-- `herdr agent start` + `zolly worker-brief` for the reviewer (`pr-reviewer@{{FREQUENCY}}`); `zolly reviewer <task-id>` when you need its one-line verdict back
+- `herdr agent start` + `zolly worker-brief` for the reviewer (`pr-reviewer-{{FREQUENCY}}`); `zolly reviewer <task-id>` when you need its one-line verdict back
 - `radio pm <handle>` to talk to a worker or the reviewer when the bus is up
 
 ## Worker pattern
@@ -103,8 +103,8 @@ You plan, delegate, monitor, report, go idle. Next prompt = next task.
    reports. A worker persona with a specific role (a hire request rendered by
    `.agents/hr/hr.py`) overrides the generic one; if the brief names a role,
    load that persona instead.
-3. `herdr agent start worker@{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>` → starts worker
-4. `zolly worker-brief worker@{{FREQUENCY}}-<task-id> --file <brief-path> --timeout-ms 1800000` → delivers the brief and returns only once the turn has **started**
+3. `herdr agent start worker-{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>` → starts worker
+4. `zolly worker-brief worker-{{FREQUENCY}}-<task-id> --file <brief-path> --timeout-ms 1800000` → delivers the brief and returns only once the turn has **started**
 5. **Monitor**: check its pane output; if it stalls or drifts, message it —
    `radio pm worker-<task-id> '…'`, or `zolly worker-brief` for a follow-up
    brief. Never re-send the brief blindly. Reuse the same worker for a follow-up
@@ -131,14 +131,14 @@ Foreman invokes the reviewer agent for code review. The reviewer **merges on PAS
 
 ```bash
 # `zolly init` creates this tab and names the agent. Start it by hand only if
-# `herdr agent list` does not show pr-reviewer@{{FREQUENCY}}.
+# `herdr agent list` does not show pr-reviewer-{{FREQUENCY}}.
 herdr tab create --label pr-reviewer --cwd <repo root> --focus   # prints the pane id
-herdr agent start pr-reviewer@{{FREQUENCY}} --kind omp --pane <pane-id>
-zolly worker-brief pr-reviewer@{{FREQUENCY}} --file .agents/reviewer/agent.md --timeout-ms 120000
+herdr agent start pr-reviewer-{{FREQUENCY}} --kind omp --pane <pane-id>
+zolly worker-brief pr-reviewer-{{FREQUENCY}} --file .agents/reviewer/agent.md --timeout-ms 120000
 ```
 
 Then for each review. Deliver it with
-`zolly worker-brief pr-reviewer@{{FREQUENCY}} --file <prompt-file>`
+`zolly worker-brief pr-reviewer-{{FREQUENCY}} --file <prompt-file>`
 — never a raw `herdr agent prompt` on this multi-line prompt (the paste is held
 unsubmitted and a blind `--until idle` reports success anyway).
 `zolly reviewer <task-id>` sends this review and returns the one-line verdict in

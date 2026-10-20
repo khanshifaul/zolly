@@ -70,20 +70,20 @@ class McpBindingTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_project_config_wins_over_a_conflicting_env_override(self):
-        os.environ["ZOLLY_MCP_AGENT"] = "zolly@other-office"
+        os.environ["ZOLLY_MCP_AGENT"] = "zolly-other-office"
         with contextlib.redirect_stderr(io.StringIO()) as err:
             name = mcp._agent_name()
-        self.assertEqual(name, "zolly@office-a")
+        self.assertEqual(name, "zolly-office-a")
         self.assertIn("ignoring ZOLLY_MCP_AGENT", err.getvalue())
 
     def test_env_override_is_used_only_when_no_project_resolves(self):
         os.environ.pop("ZOLLY_ROOT")
-        os.environ["ZOLLY_MCP_AGENT"] = "zolly@explicit"
+        os.environ["ZOLLY_MCP_AGENT"] = "zolly-explicit"
         with tempfile.TemporaryDirectory() as empty:
             cwd = os.getcwd()
             os.chdir(empty)
             try:
-                self.assertEqual(mcp._agent_name(), "zolly@explicit")
+                self.assertEqual(mcp._agent_name(), "zolly-explicit")
             finally:
                 os.chdir(cwd)
 
