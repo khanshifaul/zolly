@@ -10,7 +10,7 @@ on the machine consumes the same binary plus a small per-project skeleton.
 
 That writes `~/Projects/my-app/.agents/` — the office kit — and prints the
 follow-ups it will not do for you (Telegram credentials, the systemd unit, the
-`zolly-seat` shell block).
+`zolly` shell block).
 
 ## Install with one command
 
@@ -227,11 +227,18 @@ Then bind your own pane to the bus — the installer prints this block, ready to
 paste into `~/.zshrc`:
 
 ```sh
-zolly-seat() {
+zolly() {
+  # Bare `zolly` is the seat: join the office's bus, then start omp.
+  # `zolly <command>` still runs the CLI unchanged.
+  if [ "$#" -gt 0 ]; then command zolly "$@"; return; fi
   # ...radio join zolly --frequency <freq> --role "Manager of the <project> office"...
-  omp "$@"
+  omp
 }
 ```
+
+Bare `zolly` therefore seats you; `zolly doctor`, `zolly init` and every other
+subcommand are unaffected. Scripts and non-interactive shells call the binary
+directly, where bare `zolly` still prints its help.
 
 ## What the office needs from your project
 
