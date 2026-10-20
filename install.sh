@@ -35,7 +35,8 @@
 # The install asks before each optional feature — the shared binary, the MCP
 # server, Telegram and the systemd unit. Answer no to skip one. With no
 # terminal (CI, a pipe) every default is used and nothing is asked; --yes
-# takes the defaults without asking.
+# takes the defaults without asking. Color is used only when stdout is a
+# terminal; NO_COLOR=1 or TERM=dumb keeps the log plain.
 #
 # Env:
 #   ZOLLY_TELEGRAM_TOKEN   bot token (prompted if absent and Telegram wanted)
@@ -107,18 +108,124 @@ BIN_DEST="${ZOLLY_BIN_DEST:-$HOME/.local/bin/zolly}"
 CRED_ROOT="$HOME/.config/zolly"
 SERVICE_DIR="$HOME/.config/systemd/user"
 
-die() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
-say() { printf '%s\n' "$1"; }
-step() { printf '\n== %s\n' "$1"; }
+# ---------------------------------------------------------------------------
+# presentation — color is a terminal affordance: pipes, logs and CI keep the
+# plain text they always had. NO_COLOR (no-color.org) and TERM=dumb turn it
+# off too, and stdout not being a terminal is enough on its own.
+# ---------------------------------------------------------------------------
+COLOR=0
+C_RESET= C_BOLD= C_DIM= C_ACCENT= C_OK= C_WARN= C_ERR=
+init_color() {
+  [ -t 1 ] || return 0
+  [ -z "${NO_COLOR:-}" ] || return 0
+  [ "${TERM:-}" != dumb ] || return 0
+  COLOR=1
+  C_RESET=$(printf '\033[0m')
+  C_BOLD=$(printf '\033[1m')
+  C_DIM=$(printf '\033[2m')
+  C_ACCENT=$(printf '\033[1;36m')
+  C_OK=$(printf '\033[32m')
+  C_WARN=$(printf '\033[33m')
+  C_ERR=$(printf '\033[1;31m')
+}
+init_color
 
-# Questions read from the terminal, never stdin: when the installer is piped,
-# stdin is the script itself. No terminal (CI) means the default answer, so a
-# prompt can never hang a non-interactive run.
+die() {
+  if [ "$COLOR" -eq 1 ]; then
+    printf '%sinstall.sh:%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2
+  else
+    printf 'install.sh: %s\n' "$1" >&2
+  fi
+  exit 1
+}
+say() { printf '%s\n' "$1"; }
+
+# Status lines: a glyph and a color on a terminal, the historical plain
+# prefix everywhere else, so a piped log still reads the same.
+ok() {
+  if [ "$COLOR" -eq 1 ]; then
+    printf '  %s✔%s %s\n' "$C_OK" "$C_RESET" "$1"
+  else
+    printf 'ok   %s\n' "$1"
+  fi
+}
+warn() {
+  if [ "$COLOR" -eq 1 ]; then
+    printf '  %s!%s %s\n' "$C_WARN" "$C_RESET" "$1"
+  else
+    printf 'warn %s\n' "$1"
+  fi
+}
+skip() {
+  if [ "$COLOR" -eq 1 ]; then
+    # The color stops after the message: the phrase "skip MCP (--no-mcp)" has
+    # to stay contiguous for anyone grepping the captured output.
+    printf '  %s→%s %s%s%s%s\n' "$C_DIM" "$C_RESET" "$C_WARN" "skip " "$1" "$C_RESET"
+  else
+    printf 'skip %s\n' "$1"
+  fi
+}
+note() {
+  if [ "$COLOR" -eq 1 ]; then
+    printf '  %s·%s %s\n' "$C_DIM" "$C_RESET" "$1"
+  else
+    printf 'note %s\n' "$1"
+  fi
+}
+step() {
+  if [ "$COLOR" -eq 1 ]; then
+    printf '\n  %s▸ %s%s\n' "$C_ACCENT" "$1" "$C_RESET"
+  else
+    printf '\n== %s\n' "$1"
+  fi
+}
+heading() {
+  if [ "$COLOR" -eq 1 ]; then
+    printf '  %s%s%s\n' "$C_BOLD" "$1" "$C_RESET"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# prompts — read from the terminal, never stdin (when piped, stdin is the
+# script). No terminal (CI) means the default answer, so a prompt can never
+# hang a non-interactive run.
+# ---------------------------------------------------------------------------
+ESC=$(printf '\033')
+
+# A pasted value can arrive wrapped in bracketed-paste markers
+# (ESC[200~ … ESC[201~) and, when the clipboard ends in a newline, split across
+# two reads. Strip every CSI sequence and CR/LF/TAB so the value is the value.
+clean_input() {
+  printf '%s' "$1" \
+    | sed -e "s/${ESC}\[[0-9;?]*[A-Za-z~]//g" \
+    | tr -d '\015\012\011' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 can_ask() {
   [ "$ASSUME_YES" -eq 0 ] || return 1
   # stderr is redirected first: a missing or unusable /dev/tty would print a
   # shell error into the install log.
   tty 2>/dev/null >/dev/null </dev/tty
+}
+
+# tty_mode line|secret — canonical input and CR→NL, echo on or off, saved and
+# restored around the read. A terminal a TUI left in raw mode otherwise never
+# delivers the Enter that ends the line.
+tty_mode() {
+  tty_saved=$(stty -g </dev/tty 2>/dev/null || true)
+  [ -n "$tty_saved" ] || return 0
+  if [ "$1" = secret ]; then
+    stty icanon icrnl -echo </dev/tty 2>/dev/null || true
+  else
+    stty icanon icrnl echo </dev/tty 2>/dev/null || true
+  fi
+}
+tty_restore() {
+  [ -z "${tty_saved:-}" ] || stty "$tty_saved" </dev/tty 2>/dev/null || true
+  tty_saved=""
 }
 
 # ask_yn <question> <y|n> — prints y or n. The default is used when there is
@@ -127,8 +234,14 @@ ask_yn() {
   ask_q="$1"; ask_def="$2"
   if ! can_ask; then printf '%s\n' "$ask_def"; return 0; fi
   if [ "$ask_def" = y ]; then ask_sfx='[Y/n]'; else ask_sfx='[y/N]'; fi
-  printf '%s %s ' "$ask_q" "$ask_sfx" >/dev/tty
-  if read -r ask_ans </dev/tty 2>/dev/null; then :; else ask_ans=""; fi
+  if [ "$COLOR" -eq 1 ]; then
+    printf '%s%s%s %s%s%s ' "$C_BOLD" "$ask_q" "$C_RESET" "$C_DIM" "$ask_sfx" "$C_RESET" >/dev/tty
+  else
+    printf '%s %s ' "$ask_q" "$ask_sfx" >/dev/tty
+  fi
+  tty_mode line
+  if read -r ask_ans </dev/tty 2>/dev/null; then ask_ans=$(clean_input "$ask_ans"); else ask_ans=""; fi
+  tty_restore
   [ -n "$ask_ans" ] || ask_ans="$ask_def"
   case "$ask_ans" in y|Y|yes|YES) printf 'y\n' ;; *) printf 'n\n' ;; esac
 }
@@ -137,8 +250,14 @@ ask_yn() {
 ask_text() {
   ask_q="$1"; ask_def="${2:-}"
   if ! can_ask; then printf '%s\n' "$ask_def"; return 0; fi
-  printf '%s ' "$ask_q" >/dev/tty
-  if read -r ask_val </dev/tty 2>/dev/null; then :; else ask_val=""; fi
+  if [ "$COLOR" -eq 1 ]; then
+    printf '%s%s%s ' "$C_BOLD" "$ask_q" "$C_RESET" >/dev/tty
+  else
+    printf '%s ' "$ask_q" >/dev/tty
+  fi
+  tty_mode line
+  if read -r ask_val </dev/tty 2>/dev/null; then ask_val=$(clean_input "$ask_val"); else ask_val=""; fi
+  tty_restore
   [ -n "$ask_val" ] || ask_val="$ask_def"
   printf '%s\n' "$ask_val"
 }
@@ -148,12 +267,33 @@ ask_text() {
 ask_secret() {
   ask_q="$1"
   if ! can_ask; then printf '\n'; return 0; fi
-  printf '%s ' "$ask_q" >/dev/tty
-  ask_stty=$(stty -g </dev/tty 2>/dev/null || true)
-  [ -n "$ask_stty" ] && stty -echo </dev/tty 2>/dev/null || true
+  if [ "$COLOR" -eq 1 ]; then
+    printf '%s%s%s ' "$C_BOLD" "$ask_q" "$C_RESET" >/dev/tty
+  else
+    printf '%s ' "$ask_q" >/dev/tty
+  fi
+  tty_mode secret
   if read -r ask_val </dev/tty 2>/dev/null; then :; else ask_val=""; fi
-  [ -n "$ask_stty" ] && stty "$ask_stty" </dev/tty 2>/dev/null || true
-  printf '\n' >/dev/tty
+  # Bracketed paste is atomic, but a clipboard newline ends the read early.
+  # Keep reading until the closing marker arrives (bounded, so no hang).
+  ask_rounds=0
+  while [ "$ask_rounds" -lt 8 ]; do
+    case "$ask_val" in
+      *"${ESC}[201~"*) break ;;
+      *"${ESC}[200~"*)
+        if read -r ask_more </dev/tty 2>/dev/null; then ask_val="$ask_val$ask_more"; else break; fi
+        ask_rounds=$((ask_rounds + 1)) ;;
+      *) break ;;
+    esac
+  done
+  tty_restore
+  ask_val=$(clean_input "$ask_val")
+  # Echo is off, so say what happened without saying the token.
+  if [ -n "$ask_val" ]; then
+    printf '  %s·%s %s characters entered\n' "$C_DIM" "$C_RESET" "${#ask_val}" >/dev/tty
+  else
+    printf '  %s·%s nothing entered\n' "$C_DIM" "$C_RESET" >/dev/tty
+  fi
   printf '%s\n' "$ask_val"
 }
 
@@ -192,6 +332,11 @@ done
 TARGET=$(CDPATH= cd -- "$TARGET" 2>/dev/null && pwd) || die "target directory does not exist: $TARGET"
 [ -d "$TEMPLATE" ] || die "template not found at $TEMPLATE — run install.sh from the zolly kit directory"
 
+if [ "$COLOR" -eq 1 ]; then
+  printf '\n  %szolly%s %s·%s office installer  %s%s%s\n' \
+    "$C_ACCENT" "$C_RESET" "$C_DIM" "$C_RESET" "$C_DIM" "$TARGET" "$C_RESET"
+fi
+
 # ---------------------------------------------------------------------------
 # token guard: the template must never carry a secret
 # ---------------------------------------------------------------------------
@@ -212,7 +357,7 @@ if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
   run: cd $TARGET && git init -b $BASE_BRANCH
   (a commit is not required)"
 fi
-say "ok   git repository: $TARGET"
+ok "git repository: $TARGET"
 
 if [ -e "$TARGET/.agents" ] && [ "$FORCE" -ne 1 ]; then
   die "$TARGET/.agents already exists — re-run with --force to overwrite it"
@@ -233,31 +378,31 @@ if [ "$UNBORN" -eq 1 ]; then
     HEAD_BRANCH="$BASE_BRANCH"
   fi
   if [ "$HEAD_BRANCH" != "$BASE_BRANCH" ]; then
-    say "note no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
+    note "no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
   fi
   BASE_BRANCH="$HEAD_BRANCH"
-  say "ok   branch: $BASE_BRANCH (no commits yet)"
+  ok "branch: $BASE_BRANCH (no commits yet)"
 else
   # Commits exist. With no --base-branch, use the branch the repo is on.
   if [ "$EXPLICIT_BASE" -eq 0 ]; then
     HEAD_BRANCH=$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     if [ -n "$HEAD_BRANCH" ] && [ "$HEAD_BRANCH" != "$BASE_BRANCH" ] \
        && ! git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
-      say "note no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
+      note "no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
       BASE_BRANCH="$HEAD_BRANCH"
     fi
   fi
   if git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
-    say "ok   branch: $BASE_BRANCH"
+    ok "branch: $BASE_BRANCH"
   else
     die "branch '$BASE_BRANCH' does not exist in $TARGET — create it (git branch $BASE_BRANCH), or pass --base-branch <existing>"
   fi
 fi
 
 if git -C "$TARGET" rev-parse --verify --quiet "$REMOTE/$BASE_BRANCH" >/dev/null 2>&1; then
-  say "ok   remote ref: $REMOTE/$BASE_BRANCH"
+  ok "remote ref: $REMOTE/$BASE_BRANCH"
 else
-  say "warn no remote ref '$REMOTE/$BASE_BRANCH' — the office will merge locally only"
+  warn "no remote ref '$REMOTE/$BASE_BRANCH' — the office will merge locally only"
 fi
 
 # ---------------------------------------------------------------------------
@@ -289,13 +434,13 @@ if [ "$DRY_RUN" -ne 1 ]; then
   ( umask 077; mkdir -p "$CRED_ROOT/$FREQ"; printf '%s\n' "$PROJECT_ID" > "$CRED_ROOT/$FREQ/project" )
 fi
 
-say "ok   frequency: $FREQ"
-say "ok   project:   $PROJECT_NAME"
+ok "frequency: $FREQ"
+ok "project:   $PROJECT_NAME"
 
 if [ -z "$FOUNDER" ]; then
   FOUNDER=$(ask_text "Founder name (the office greets them by it; blank for an office with no Telegram):")
 fi
-[ -n "$FOUNDER" ] || say "warn no founder name — the office runs without Telegram greetings"
+[ -n "$FOUNDER" ] || warn "no founder name — the office runs without Telegram greetings"
 
 # ---------------------------------------------------------------------------
 # materialize the skeleton
@@ -317,7 +462,7 @@ else
     # office state) and runs are transient. Everything else is recoverable.
     ( cd "$AGENTS_DIR" && tar -cf - --exclude=./worktrees --exclude=./runs . ) \
       | ( cd "$BACKUP" && tar -xf - )
-    say "ok   previous office saved to $BACKUP"
+    ok "previous office saved to $BACKUP"
   fi
 
   rm -rf "$AGENTS_DIR"
@@ -338,9 +483,9 @@ else
     [ -f "$BACKUP/rules/project.md" ] && cp "$BACKUP/rules/project.md" "$AGENTS_DIR/rules/project.md"
     find "$BACKUP/hr" -maxdepth 1 -type f \( -name '*.md' -o -name '*.hired' \) -exec cp {} "$AGENTS_DIR/hr/" \; 2>/dev/null || true
     find "$BACKUP/worker" -maxdepth 1 -type f -name '*.md' ! -name 'generic.md' -exec cp {} "$AGENTS_DIR/worker/" \; 2>/dev/null || true
-    say "ok   restored memory, hires, worker personas and project.md"
+    ok "restored memory, hires, worker personas and project.md"
   fi
-  say "ok   copied office kit"
+  ok "copied office kit"
 fi
 
 # ---------------------------------------------------------------------------
@@ -373,7 +518,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   say "would substitute {{FREQUENCY}}=${FREQ} {{PROJECT_NAME}}=${PROJECT_NAME} {{BASE_BRANCH}}=${BASE_BRANCH} {{REMOTE}}=${REMOTE} {{FOUNDER}}=${FOUNDER:-<unset>}"
 else
   substitute
-  say "ok   placeholders substituted"
+  ok "placeholders substituted"
 fi
 
 # ---------------------------------------------------------------------------
@@ -397,7 +542,7 @@ voice = false
 # The project's display name, used in the office's own greetings.
 project = "$PROJECT_NAME"
 EOF
-  say "ok   $AGENTS_DIR/zolly/config.toml"
+  ok "$AGENTS_DIR/zolly/config.toml"
 fi
 
 # ---------------------------------------------------------------------------
@@ -421,7 +566,7 @@ else
       grep -qF "$tok" "$ROOT_CONTEXT" 2>/dev/null || missing="$missing $tok"
     done
     if [ -n "$missing" ]; then
-      say "warn $ROOT_CONTEXT has no token for:$missing"
+      warn "$ROOT_CONTEXT has no token for:$missing"
       say "     the goal and those rulebooks will NOT be in context at session start."
       if grep -qF '@.agents/memory/zolly-goal.md' "$ROOT_CONTEXT" 2>/dev/null; then
         say "     note: it still imports @.agents/memory/zolly-goal.md; that file"
@@ -429,7 +574,7 @@ else
       fi
       say "     Add the @-token lines — this installer will not edit your file."
     else
-      say "ok   $ROOT_CONTEXT already carries the goal and rulebook tokens"
+      ok "$ROOT_CONTEXT already carries the goal and rulebook tokens"
     fi
   else
     cat > "$ROOT_CONTEXT" <<EOF
@@ -452,7 +597,7 @@ in context at session start rather than merely present on disk:
 promoting a learning, and the facts it governs live in \`.agents/memory/learnings.md\`.
 \`.agents/AGENTS.md\` is the map of the whole agent layer.
 EOF
-    say "ok   $ROOT_CONTEXT (goal + rulebooks imported)"
+    ok "$ROOT_CONTEXT (goal + rulebooks imported)"
   fi
 fi
 
@@ -487,7 +632,7 @@ and a blank Answer line.
 An entry is deleted when it is answered — the answer goes into a rule or a
 memory file, not into a register of things still open.
 EOF
-    say "ok   $TARGET/OPEN-QUESTIONS.md"
+    ok "$TARGET/OPEN-QUESTIONS.md"
   fi
 
   # The handover point. The `recap` skill reads it from the tail on a cold
@@ -508,7 +653,7 @@ session is the last one.
 (No handoff yet. The `close-the-day` skill writes this file at the end of a
 working day.)
 EOF
-    say "ok   $TARGET/HANDOFF.md"
+    ok "$TARGET/HANDOFF.md"
   fi
 
   GITIGNORE="$TARGET/.gitignore"
@@ -551,11 +696,11 @@ EOF
 .agents/zolly/dead_letter.jsonl
 .agents/nudge.stamp
 EOF
-    say "ok   runtime gitignore entries"
+    ok "runtime gitignore entries"
   else
-    say "ok   runtime gitignore entries already present"
+    ok "runtime gitignore entries already present"
   fi
-  say "ok   runtime directories created"
+  ok "runtime directories created"
 fi
 
 # ---------------------------------------------------------------------------
@@ -564,9 +709,9 @@ fi
 step "shared binary"
 
 if [ "$DO_BINARY" -eq 0 ]; then
-  say "skip binary (--no-binary)"
+  skip "binary (--no-binary)"
 elif [ -x "$BIN_DEST" ]; then
-  say "ok   already installed: $BIN_DEST"
+  ok "already installed: $BIN_DEST"
   BIN_STATE="installed"
 else
   # The Rust source is not part of this kit. ZOLLY_TOOL_DIR is the only
@@ -574,7 +719,7 @@ else
   TOOL_DIR="${ZOLLY_TOOL_DIR:-}"
   if [ -n "$TOOL_DIR" ] && [ -f "$TOOL_DIR/Cargo.toml" ]; then
     if [ "$(ask_yn "Install the shared zolly binary now? (built from $TOOL_DIR)" y)" = n ]; then
-      say "skip binary (declined)"
+      skip "binary (declined)"
     elif [ "$DRY_RUN" -eq 1 ]; then
       say "would build $TOOL_DIR and install to $BIN_DEST"
       BIN_STATE="planned"
@@ -583,7 +728,7 @@ else
       ( cd "$TOOL_DIR" && cargo build --release ) || die "cargo build failed in $TOOL_DIR"
       mkdir -p "$(dirname "$BIN_DEST")"
       install -m 0755 "$TOOL_DIR/target/release/zolly" "$BIN_DEST"
-      say "ok   installed $BIN_DEST"
+      ok "installed $BIN_DEST"
       BIN_STATE="installed"
     fi
   else
@@ -607,14 +752,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 if [ ! -f "$MCP_SRC" ] || [ ! -f "$MCP_INSTALLER" ]; then
-  say "skip MCP (missing $MCP_SRC or its install.sh)"
+  skip "MCP (missing $MCP_SRC or its install.sh)"
 elif [ "$DO_MCP" -ne 1 ]; then
-  say "skip MCP (--no-mcp)"
+  skip "MCP (--no-mcp)"
 elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
-  say "ok   MCP server already deployed and identical: $MCP_DEST"
+  ok "MCP server already deployed and identical: $MCP_DEST"
   MCP_STATE="installed"
 elif [ "$(ask_yn "Deploy the MCP server to $MCP_DEST and print this office's client entry?" y)" = n ]; then
-  say "skip MCP (declined)"
+  skip "MCP (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would deploy the MCP server to $MCP_DEST"
   MCP_STATE="planned"
@@ -644,7 +789,7 @@ TG_STATE="off"
 # answers 409, so a second office needs its own bot.
 if [ -z "$TOKEN" ] || [ -z "$IDS" ]; then
   if [ -f "$CRED_FILE" ]; then
-    say "ok   credentials already exist: $CRED_FILE"
+    ok "credentials already exist: $CRED_FILE"
     [ -n "$TOKEN" ] || TOKEN=$(sed -n 's/^ZOLLY_TELEGRAM_TOKEN=//p' "$CRED_FILE")
     [ -n "$IDS" ] || IDS=$(sed -n 's/^ZOLLY_ALLOWED_IDS=//p' "$CRED_FILE")
   fi
@@ -652,14 +797,14 @@ fi
 
 WANT_TELEGRAM=0
 if [ "$DO_TELEGRAM" -eq 0 ]; then
-  say "skip Telegram (--no-telegram)"
+  skip "Telegram (--no-telegram)"
 else
   if [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
     WANT_TELEGRAM=1
   elif [ "$(ask_yn "Configure Telegram for this office? (each office needs its own bot token)" n)" = y ]; then
     WANT_TELEGRAM=1
   else
-    say "skip Telegram (declined) — add a token later at $CRED_FILE"
+    skip "Telegram (declined) — add a token later at $CRED_FILE"
   fi
   if [ "$WANT_TELEGRAM" -eq 1 ]; then
     [ -n "$TOKEN" ] || TOKEN=$(ask_secret "Telegram bot token for this office (from @BotFather; blank to skip):")
@@ -689,10 +834,10 @@ EOF
       mv -f "$tmp" "$CRED_FILE"
       trap - EXIT HUP INT TERM
     )
-    say "ok   credentials written: $CRED_FILE"
+    ok "credentials written: $CRED_FILE"
   fi
 elif [ "$WANT_TELEGRAM" -eq 1 ]; then
-  say "skip credentials (no token and ids) — add them later at $CRED_FILE"
+  skip "credentials (no token and ids) — add them later at $CRED_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -703,15 +848,15 @@ step "systemd"
 UNIT_FILE="$SERVICE_DIR/zolly@$FREQ.service"
 
 if [ "$DO_SYSTEMD" -ne 1 ]; then
-  say "skip systemd (--no-systemd)"
+  skip "systemd (--no-systemd)"
 elif [ "$DO_TELEGRAM" -eq 0 ]; then
-  say "skip systemd (Telegram is off)"
+  skip "systemd (Telegram is off)"
 elif [ "$HAVE_CREDS" -ne 1 ]; then
   # A listener with no token would restart-loop. Do not create a unit that
   # cannot work; tell the user how to get one after adding credentials.
-  say "skip systemd (no Telegram credentials) — add a token to $CRED_FILE, then re-run with --force"
+  skip "systemd (no Telegram credentials) — add a token to $CRED_FILE, then re-run with --force"
 elif [ "$(ask_yn "Write the systemd user unit zolly@$FREQ.service for this office?" y)" = n ]; then
-  say "skip systemd (declined)"
+  skip "systemd (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would write $UNIT_FILE"
 else
@@ -732,7 +877,7 @@ WorkingDirectory=$TARGET
 [Install]
 WantedBy=default.target
 EOF
-  say "ok   unit written: $UNIT_FILE"
+  ok "unit written: $UNIT_FILE"
   SD_STATE="written"
   say ""
   say "To run it:"
@@ -750,15 +895,30 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-say "office installed: $AGENTS_DIR"
-say "features: binary $BIN_STATE, MCP $MCP_STATE, Telegram $TG_STATE, systemd $SD_STATE"
+if [ "$COLOR" -eq 1 ]; then
+  printf '\n  %s✔%s %soffice installed%s  %s%s%s\n' \
+    "$C_OK" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_DIM" "$AGENTS_DIR" "$C_RESET"
+  printf '  %sfeatures%s' "$C_DIM" "$C_RESET"
+  for _pair in "binary:$BIN_STATE" "MCP:$MCP_STATE" "Telegram:$TG_STATE" "systemd:$SD_STATE"; do
+    _label=${_pair%%:*}; _value=${_pair#*:}
+    case "$_value" in
+      installed|configured|written) _col=$C_OK ;;
+      *) _col=$C_DIM ;;
+    esac
+    printf '  %s%s%s %s%s%s' "$C_DIM" "$_label" "$C_RESET" "$_col" "$_value" "$C_RESET"
+  done
+  printf '\n'
+else
+  say "office installed: $AGENTS_DIR"
+  say "features: binary $BIN_STATE, MCP $MCP_STATE, Telegram $TG_STATE, systemd $SD_STATE"
+fi
 if [ "$UNBORN" -eq 1 ]; then
   say ""
-  say "note this repository has no commits yet. Make the first commit before"
+  note "this repository has no commits yet. Make the first commit before"
   say "     dispatching a task — task branches are cut from '$BASE_BRANCH'."
 fi
 say ""
-say "Next steps (printed, not run — they touch your shell and your services):"
+heading "Next steps (printed, not run — they touch your shell and your services):"
 say ""
 say "1. Check the office:"
 if [ "$BIN_STATE" = "installed" ]; then

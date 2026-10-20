@@ -170,9 +170,13 @@ install.sh [target-dir] [options]
 **Interactive by default.** The installer asks before each optional feature —
 the shared binary, the MCP server, Telegram, and the systemd unit — and any
 answer of "no" skips just that feature. Questions are read from the terminal
-(`/dev/tty`), not stdin, so the `curl | bash` form still prompts. With no
-terminal at all (CI, a pipe) every default is used and nothing blocks;
-`--yes` takes the same defaults without asking.
+(`/dev/tty`), not stdin, so the `curl | bash` form still prompts. Answers are
+cleaned, so a bot token pasted from a modern terminal works (bracketed-paste
+markers are stripped) and the token prompt reports how many characters it
+received without echoing them. With no terminal at all (CI, a pipe) every
+default is used and nothing blocks; `--yes` takes the same defaults without
+asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
+`TERM=dumb` keeps it plain.
 
 | Option | Meaning |
 |---|---|

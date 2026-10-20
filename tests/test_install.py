@@ -252,5 +252,32 @@ class InstallTests(unittest.TestCase):
         self.assertFalse((self.home / ".config" / "zolly" / "app" / "credentials").exists())
 
 
+    def install_with_pasted_token(self, name, payload):
+        repo = self.make_repo(name)
+        # MCP no, Telegram yes, token payload, allowed ids.
+        answers = b"n\ny\n" + payload + b"1,2\n"
+        code, text = self.run_in_pty(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            answers,
+        )
+        self.assertEqual(code, 0, text)
+        creds = (self.home / ".config" / "zolly" / name / "credentials").read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_TELEGRAM_TOKEN=123456:ABCdef\n", creds)
+        self.assertIn("ZOLLY_ALLOWED_IDS=1,2\n", creds)
+        return text
+
+    def test_pasted_token_is_used_verbatim(self):
+        # Modern terminals wrap a paste in ESC[200~ … ESC[201~; the markers are
+        # part of the line a plain read() sees, and must not reach the file.
+        text = self.install_with_pasted_token("paste-one", b"\x1b[200~123456:ABCdef\x1b[201~\n")
+        self.assertIn("characters entered", text)
+
+    def test_pasted_token_split_by_a_clipboard_newline_is_used_verbatim(self):
+        # A clipboard that ends in a newline splits the paste across two reads.
+        self.install_with_pasted_token(
+            "paste-two", b"\x1b[200~123456:ABCdef\n\x1b[201~\n"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
