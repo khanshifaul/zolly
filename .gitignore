@@ -1,0 +1,12 @@
+# The kit's own working files. The installer writes a separate block into each
+# target's .gitignore; this file only keeps the template clean.
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# `.agents/memory/archive/` is committed on purpose (it is the long-term
+# memory), so it must NOT be ignored. Only transient write artefacts are.
+.agents/memory/.work/
+.agents/memory/.lock
+.agents/memory/*.tmp

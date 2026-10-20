@@ -1,0 +1,211 @@
+# zolly — an installable agent office for any git project
+
+One machine-wide binary, N per-project offices. `zylosync` is the factory where
+the Rust tool is built; every other project on this machine consumes the same
+binary plus a small per-project skeleton.
+
+```sh
+./install.sh ~/Projects/my-app --founder "Your Name"
+```
+
+That writes `~/Projects/my-app/.agents/` — the office kit — and prints the
+follow-ups it will not do for you (Telegram credentials, the systemd unit, the
+`zolly-seat` shell block).
+
+## One-line install
+
+The installer also runs from a pipe. It fetches the published kit, then installs
+into the target — the target is still a project, not the machine.
+
+```sh
+ZOLLY_REPO=https://github.com/khanshifaul/zolly
+curl -fsSL "$ZOLLY_REPO/raw/main/install.sh" \
+  | ZOLLY_KIT_URL="$ZOLLY_REPO/archive/refs/heads/main.tar.gz" \
+    bash -s -- ~/Projects/my-app --founder "Your Name"
+```
+
+Run it **inside** the project and omit the target:
+
+```sh
+cd ~/Projects/my-app
+curl -fsSL "$ZOLLY_REPO/raw/main/install.sh" \
+  | ZOLLY_KIT_URL="$ZOLLY_REPO/archive/refs/heads/main.tar.gz" \
+    bash -s -- --founder "Your Name"
+```
+
+The target defaults to the current directory. Everything it writes belongs to
+that project: `.agents/`, the frequency (the directory name),
+`~/.config/zolly/<freq>/credentials`, and the systemd unit. A second project
+gets a second office; the binary is the only machine-wide piece, installed once.
+
+The command needs the kit pushed to `main` at that URL. Until it is, both URLs
+return 404; clone the repo and run `./install.sh <target>` instead — same
+installer, no download.
+
+## What you get
+
+| Path | What it is |
+|---|---|
+| `~/.local/bin/zolly` | the binary, built once from `zylosync/.agents/zolly/tool` |
+| `<project>/.agents/` | the office kit: rules, personas, memory, prompts, skills |
+| `~/.config/zolly/<freq>/credentials` | the Telegram token — machine-local, never in the repo |
+| `~/.config/systemd/user/zolly@<freq>.service` | the Telegram listener for that project |
+
+## Isolation between offices
+
+Two offices on one machine must not collide. Three mechanisms do that, and they
+are deliberately different:
+
+- **Radio frequency** — the bus an office talks on. It is the project's own
+  name (`zylosync`, `my-app`). Radio handles (`zolly`, `foreman`,
+  `pr-reviewer`, `worker-<task-id>`) are unique *within* a frequency, so they
+  stay unprefixed.
+- **herdr agent name** — the seat's process name. These are unique
+  **server-wide**, so two offices would collide on a bare `foreman`. They carry
+  the frequency: `foreman-my-app`, `pr-reviewer-my-app`.
+- **Credentials and systemd** — keyed by frequency, so one project cannot read
+  another's token.
+
+Every seat carries the frequency on herdr, the manager included
+(`zolly-my-app`); radio handles stay unprefixed because the bus is scoped to the
+frequency already.
+
+## Configuration
+
+`<project>/.agents/zolly/config.toml` is the single source. Precedence is
+**environment variable > config.toml > default**.
+
+```toml
+frequency   = "my-app"     # default: the repo directory name
+founder     = "Your Name"  # required — the office greets the founder by it
+base_branch = "main"       # the branch work integrates into
+remote      = "origin"     # the remote that branch is tracked on
+voice       = false        # voice replies; only true where piper is installed
+project     = "My App"     # display name (the installer writes the directory name)
+```
+
+Env overrides: `ZOLLY_FREQUENCY`, `ZOLLY_FOUNDER`, `ZOLLY_BASE_BRANCH`,
+`ZOLLY_REMOTE`, `ZOLLY_VOICE`, `ZOLLY_PROJECT`.
+
+`frequency` is the machine identifier; `project` is what the founder calls the
+thing. The installer sets the frequency from `--name` (default: the directory
+name) and the project name to the directory name, so they differ only when
+you pass a different `--name` or edit the file.
+
+A missing `config.toml` is not an error — every field has a default — but
+`zolly doctor` **fails** when the founder is unset. An office that greets the
+founder by the wrong name is worse than one that says nothing.
+
+## The installer
+
+```sh
+install.sh [target-dir] [options]
+```
+
+| Option | Meaning |
+|---|---|
+| `--name <freq>` | radio frequency (default: the target directory name) |
+| `--founder <name>` | founder's display name (prompted if absent) |
+| `--base-branch <b>` | integration branch (default: `main`) |
+| `--remote <r>` | git remote (default: `origin`) |
+| `--no-systemd` | do not write a systemd user unit |
+| `--no-binary` | do not install the shared binary |
+| `--force` | install even if the target already has `.agents/` |
+| `--dry-run` | print what would happen, change nothing |
+
+Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER`,
+`ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`.
+
+It refuses to run when the target is not a git repository, when the base
+branch does not exist, when the target already has `.agents/` (without
+`--force`), or when the template tree contains a `.env`. **The token guard is
+the point:** a tree copy that shipped the bot token would leak it into every
+project it touched.
+
+It never edits `~/.zshrc` and never touches systemd state. It prints the
+follow-ups and lets you run them.
+
+## After installing
+
+```sh
+cd <target-dir>
+zolly doctor      # the acceptance test: all green
+zolly init        # start the foreman and pr-reviewer seats
+```
+
+`zolly init` opens two seats, joins them to the project's radio frequency, and
+delivers each seat's boot prompt followed by its persona.
+
+Then bind your own pane to the bus — the installer prints this block, ready to
+paste into `~/.zshrc`:
+
+```sh
+zolly-seat() {
+  # ...radio join zolly --frequency <freq> --role "Manager of the <project> office"...
+  omp "$@"
+}
+```
+
+## What the office needs from your project
+
+The kit ships `rules/project.md` empty on purpose. It is the one file that
+holds **your** truths, and no agent can infer them:
+
+- the architecture and the services that make it up
+- where things live on disk
+- the size thresholds that make a change LARGE
+- the divisions, if you have any
+
+Fill it in, or the office will plan against a codebase that is not on disk.
+
+## The kit's own rules
+
+**A committed file proves nothing about being read.** Every file in `.agents/`
+has a load line — the line that loads it — and `.agents/AGENTS.md` holds the
+register. If you add a rule, add the line that loads it and assert the line
+resolves. A record no process consults is a comment.
+
+Skills are **real files**, never symlinks: two copies of the same skill drift
+apart, and only one is tracked, so a fresh clone loses it.
+
+Runtime state (`queue/`, `runs/`, `inbox/`, `worktrees/`, `events/`,
+`STATE.md`, …) is machine-local and gitignored. `.agents/results/` is the
+exception: a worker commits its result file **on the task branch** so the
+reviewer can read it there; it is not committed to `main`. `.agents/memory/` is
+**committed on purpose** — it is the knowledge that has to survive a machine
+switch.
+
+## Tests
+
+The kit's executable logic is tested from the kit root:
+
+```sh
+./test.sh
+```
+
+That runs the syntax checks, the unit tests below, and the MCP handshake.
+
+| Suite | Covers |
+|---|---|
+| `tests/test_hr.py` | the approval gate, dry-run, persona rendering, the `.hired` receipt |
+| `tests/test_memory.py` | secret refusal, supersession, confirm, retract, the bound check |
+
+`memory` honours `MEMORY_DIR`, so the suite runs in a temp directory and never
+touches `.agents/memory/`. The MCP server has its own client:
+`python3 .agents/zolly/mcp/test_mcp.py handshake`.
+
+## Where things live
+
+```
+zolly/
+├── install.sh          # the installer
+├── test.sh             # syntax + unit + MCP handshake
+├── README.md           # this file
+├── tests/              # the kit's own tests
+└── .agents/            # the template — the office kit, project-agnostic
+```
+
+The Rust crate stays in `zylosync/.agents/zolly/tool/`. That is where the
+`zolly close` self-rebuild step makes sense: installed projects have no local
+tool source, so that step **skips** rather than fails, and they use the shared
+binary.

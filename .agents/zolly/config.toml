@@ -1,0 +1,10 @@
+# Zolly office configuration for this project.
+# The installer writes the real values; edit them here any time.
+
+frequency = "{{FREQUENCY}}"
+founder = "{{FOUNDER}}"
+base_branch = "{{BASE_BRANCH}}"
+remote = "{{REMOTE}}"
+voice = false
+# The project's display name, used in the office's own greetings.
+project = "{{PROJECT_NAME}}"
