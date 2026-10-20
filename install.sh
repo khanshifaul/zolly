@@ -95,7 +95,7 @@ REMOTE="origin"
 DO_SYSTEMD=1
 DO_BINARY=1
 DO_MCP=1
-DO_TELEGRAM=-1          # -1 ask, 0 no, 1 yes
+DO_TELEGRAM=1           # 0 = --no-telegram: no credentials, no listener
 ASSUME_YES=0
 BIN_STATE="skipped"
 MCP_STATE="skipped"
