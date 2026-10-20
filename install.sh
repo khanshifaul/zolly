@@ -225,6 +225,10 @@ else
   # `cp -R` keeps the template's own directory layout. The template holds no
   # symlinks (verified at build time), so nothing can point outside the tree.
   cp -R "$TEMPLATE/." "$AGENTS_DIR/"
+  # Never ship a stale interpreter cache into a project. A local template tree
+  # can have one after tests; a git archive cannot.
+  find "$AGENTS_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+  find "$AGENTS_DIR" -type f -name '*.pyc' -exec rm -f {} + 2>/dev/null || true
 
   if [ -n "$BACKUP" ]; then
     # Restore what the office cannot regenerate. The template's copies are
