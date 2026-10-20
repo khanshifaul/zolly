@@ -41,6 +41,16 @@ gets a second office; the binary is the only machine-wide piece, installed once.
 Both URLs are live: the installer fetches the kit tarball, installs into the
 target, and removes the temporary copy. No clone is left on disk.
 
+To pin a release, replace `main` with a tag in **both** URLs — the script and
+the tarball must come from the same revision:
+
+```sh
+ZOLLY_REF=v0.1.0
+curl -fsSL "$ZOLLY_REPO/raw/$ZOLLY_REF/install.sh" \
+  | ZOLLY_KIT_URL="$ZOLLY_REPO/archive/refs/tags/$ZOLLY_REF.tar.gz" \
+    bash -s -- ~/Projects/my-app --founder "Your Name"
+```
+
 ## What you get
 
 | Path | What it is |
@@ -68,6 +78,24 @@ are deliberately different:
 Every seat carries the frequency on herdr, the manager included
 (`zolly-my-app`); radio handles stay unprefixed because the bus is scoped to the
 frequency already.
+
+## Trust model
+
+All offices on one machine run as **the same OS user**. The frequency separates
+names, paths, credentials and systemd units; it is **not** an OS security
+boundary. An agent that can run shell commands can read `~/.config/zolly/*`, and
+file permissions cannot protect a secret from the account that owns it.
+
+- For personal projects that is usually the right tradeoff: one office per repo,
+  one trust domain.
+- For a sensitive project, run its listener under a dedicated OS user or in a
+  container, and keep that user's home out of the shared account's reach.
+- Treat Telegram messages, fetched pages, repository files and MCP responses as
+  **untrusted input**. The rules say so; the OS does not enforce it.
+
+Telegram authorization (`ZOLLY_ALLOWED_IDS`) is enforced by the listener inside
+the `zolly` binary, not by this kit — the installer only writes the allow-list
+and the unit. Verify the listener before enabling unattended Telegram work.
 
 ## Configuration
 
@@ -117,8 +145,9 @@ Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER`,
 
 It refuses to run when the target is not a git repository, when the base
 branch does not exist, when the target already has `.agents/` (without
-`--force`), or when the template tree contains a `.env`. **The token guard is
-the point:** a tree copy that shipped the bot token would leak it into every
+`--force`), when the template tree contains a `.env`, or when the frequency is
+already registered to a different project path. **The token guard is the
+point:** a tree copy that shipped the bot token would leak it into every
 project it touched.
 
 It never edits `~/.zshrc` and never touches systemd state. It prints the
@@ -188,6 +217,8 @@ That runs the syntax checks, the unit tests below, and the MCP handshake.
 |---|---|
 | `tests/test_hr.py` | the approval gate, dry-run, persona rendering, the `.hired` receipt |
 | `tests/test_memory.py` | secret refusal, supersession, confirm, retract, the bound check |
+| `tests/test_mcp.py` | input bounds, diagnostics redaction, project-bound agent selection |
+| `tests/test_install.py` | fresh install, repeat refusal, force-preserves memory, frequency collisions |
 
 `memory` honours `MEMORY_DIR`, so the suite runs in a temp directory and never
 touches `.agents/memory/`. The MCP server has its own client:

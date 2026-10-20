@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # sh -n, py_compile, unit + installer integration tests, MCP handshake.
+      - name: tests
+        run: ./test.sh
+
+      # The installer is /bin/sh. On Ubuntu that is dash, where a bash-only
+      # builtin would fail silently. Run a real install, not just -n.
+      - name: dash install smoke
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/home"
+          git init -q "$tmp/app"
+          git -C "$tmp/app" config user.email t@example.com
+          git -C "$tmp/app" config user.name Test
+          git -C "$tmp/app" commit -q --allow-empty -m init
+          git -C "$tmp/app" branch -M main
+          HOME="$tmp/home" dash ./install.sh "$tmp/app" --no-binary --no-systemd --founder Test
+          if grep -r '{{' "$tmp/app/.agents"; then
+            echo "::error::placeholder substitution failed under dash"
+            exit 1
+          fi
+
+      # The installer's .env guard is filename-based. This is the content-based
+      # backstop: fail the build on a high-confidence credential shape.
+      - name: secret scan
+        run: |
+          if grep -rInE \
+            'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY' \
+            . --exclude-dir=.git --exclude=memory; then
+            echo "::error::credential-shaped string in the tree"
+            exit 1
+          fi

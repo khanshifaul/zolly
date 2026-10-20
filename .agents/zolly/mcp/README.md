@@ -44,6 +44,23 @@ Pass `wait_submit_ms: 0` for a pure fire-and-forget that only reports the ack.
 |`test_mcp.py`|a stdio client: `handshake`, `status`, `say "text"`|
 |`install.sh`|copies `zolly_mcp.py` to `~/.local/bin/zolly-mcp` and prints the mcp.json entry|
 
+## Bounds and binding
+
+The server is local stdio, but it still bounds every input:
+
+| Limit | Value |
+|---|---|
+| `zolly_say` text | 64 KiB |
+| `wait_submit_ms` | integer, 0–5000 (booleans and floats are refused) |
+| JSON-RPC line | 1 MiB |
+| returned diagnostics | 2 KiB, credential-shaped strings redacted |
+
+The agent is **bound to the project**: when `.agents/zolly/config.toml` resolves
+from `ZOLLY_ROOT` (or the cwd), the manager is `zolly-<frequency>`. A conflicting
+`ZOLLY_MCP_AGENT` is ignored with a warning, so an inherited environment cannot
+point this server at another office. The override is honoured only when no
+project config resolves.
+
 ## Install
 
 ```sh

@@ -49,20 +49,32 @@ import time
 SERVER_NAME = "zolly-mcp"
 SERVER_VERSION = "0.1.0"
 
+# Bounds. The server is a local stdio process, but a client (or a bug) can
+# still send an enormous message or a polling interval that parks the loop.
+# A serial protocol loop must bound every input it reads.
+MAX_TEXT_BYTES = 64 * 1024
+MAX_WAIT_MS = 5000
+MAX_LINE_BYTES = 1024 * 1024
+MAX_DIAG = 2000
+
+
+def _diag(text, limit=MAX_DIAG):
+    """A diagnostic string safe to return over MCP: redacted and bounded."""
+    text = _text(text)
+    text = re.sub(
+        r'(?i)((?:[A-Za-z_]*TOKEN|secret|password)\s*[=:]\s*)\S+',
+        r'\1[redacted]',
+        text,
+    )
+    text = re.sub(r'\b(ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9]{20,}\b', r'\1[redacted]', text)
+    text = re.sub(r'\bsk-[A-Za-z0-9]{16,}\b', 'sk-[redacted]', text)
+    return text[:limit]
+
 DEFAULT_PROTOCOL = "2024-11-05"
 KNOWN_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
 
-def _agent_name():
-    """The manager's herdr name: env, else `zolly-<frequency>` from config.
-
-    herdr agent names are server-global, so every seat carries the office's
-    frequency. A second office's manager is `zolly-<its-frequency>`; reaching a
-    bare `zolly` would prompt whichever pane claimed that name first.
-    """
-    override = os.environ.get("ZOLLY_MCP_AGENT")
-    if override:
-        return override
-    root = os.environ.get("ZOLLY_ROOT") or os.getcwd()
+def _read_frequency(root):
+    """The office frequency for `root`, or None if no office is found."""
     while True:
         cfg = os.path.join(root, ".agents", "zolly", "config.toml")
         try:
@@ -70,13 +82,36 @@ def _agent_name():
                 for line in f:
                     m = re.match(r'\s*frequency\s*=\s*"([^"]+)"', line)
                     if m and "{{" not in m.group(1):
-                        return "zolly-" + m.group(1)
+                        return m.group(1)
         except OSError:
             pass
         parent = os.path.dirname(root)
         if parent == root:
-            return "zolly"
+            return None
         root = parent
+
+
+def _agent_name():
+    """The manager's herdr name, bound to the project this server runs in.
+
+    herdr agent names are server-global, so every seat carries the office's
+    frequency. When a project config is found it wins: an inherited or
+    misconfigured ZOLLY_MCP_AGENT must not be able to point this server at
+    another office. The override is honoured only when no project resolves
+    (the single-office compatibility case).
+    """
+    root = os.path.realpath(os.environ.get("ZOLLY_ROOT") or os.getcwd())
+    freq = _read_frequency(root)
+    override = os.environ.get("ZOLLY_MCP_AGENT")
+    if freq:
+        expected = "zolly-" + freq
+        if override and override != expected:
+            sys.stderr.write(
+                "zolly-mcp: ignoring ZOLLY_MCP_AGENT=%r; this project is %s\n"
+                % (override, expected)
+            )
+        return expected
+    return override or "zolly"
 
 
 AGENT = _agent_name()
@@ -259,8 +294,29 @@ def zolly_say(text, wait_submit_ms=2000):
             "delivered": False,
             "error": "zolly_say requires non-empty text",
         }
+    if len(text.encode("utf-8", "replace")) > MAX_TEXT_BYTES:
+        return {
+            "ok": False,
+            "agent": AGENT,
+            "delivered": False,
+            "error": "text exceeds %d bytes" % MAX_TEXT_BYTES,
+        }
+    if isinstance(wait_submit_ms, bool) or not isinstance(wait_submit_ms, int):
+        return {
+            "ok": False,
+            "agent": AGENT,
+            "delivered": False,
+            "error": "wait_submit_ms must be an integer in 0-%d" % MAX_WAIT_MS,
+        }
+    if wait_submit_ms < 0 or wait_submit_ms > MAX_WAIT_MS:
+        return {
+            "ok": False,
+            "agent": AGENT,
+            "delivered": False,
+            "error": "wait_submit_ms must be in 0-%d" % MAX_WAIT_MS,
+        }
 
-    wait_ms = int(wait_submit_ms) if wait_submit_ms else 0
+    wait_ms = wait_submit_ms
 
     before, _ = agent_entry(AGENT)
     screen_before = agent_screen(AGENT, 8)
@@ -333,9 +389,9 @@ def zolly_say(text, wait_submit_ms=2000):
         "delivered": delivered,
         "exit_code": res["exit_code"],
         "timed_out": res["timed_out"],
-        "stderr": res["stderr"].strip(),
+        "stderr": _diag(res["stderr"]),
         "herdr_result_type": ack_type,
-        "herdr_stdout": res["stdout"].strip(),
+        "herdr_stdout": _diag(res["stdout"]),
         "pane_id": (after or before or {}).get("pane_id"),
         "revision_before": revision_before,
         "revision_after": revision_after,
@@ -353,7 +409,7 @@ def zolly_say(text, wait_submit_ms=2000):
     if res["timed_out"]:
         out["error"] = "herdr agent prompt timed out after %ss" % PROMPT_TIMEOUT_S
     elif not delivered:
-        out["error"] = "herdr agent prompt failed: %s" % (res["stderr"].strip() or ("exit %s" % res["exit_code"]))
+        out["error"] = "herdr agent prompt failed: %s" % (_diag(res["stderr"]) or ("exit %s" % res["exit_code"]))
     return out
 
 
@@ -368,20 +424,20 @@ def zolly_status():
         "cwd": root,
         "exit_code": res["exit_code"],
         "timed_out": res["timed_out"],
-        "stderr": res["stderr"].strip(),
+        "stderr": _diag(res["stderr"]),
     }
     if res["timed_out"]:
         out["error"] = "zolly pulse --json timed out after %ss" % STATUS_TIMEOUT_S
         return out
     if res["exit_code"] != 0:
-        out["error"] = "zolly pulse --json failed: %s" % (res["stderr"].strip() or ("exit %s" % res["exit_code"]))
+        out["error"] = "zolly pulse --json failed: %s" % (_diag(res["stderr"]) or ("exit %s" % res["exit_code"]))
         return out
     try:
         out["json"] = json.loads(res["stdout"])
     except (ValueError, TypeError) as e:
         out["ok"] = False
         out["error"] = "zolly pulse --json returned unparseable JSON: %s" % e
-        out["stdout"] = res["stdout"]
+        out["stdout"] = _diag(res["stdout"])
     return out
 
 
@@ -466,7 +522,7 @@ def handle_call(params):
             return tool_result(out, is_error=True)
         return tool_result({"error": "unknown tool: %r" % (name,)}, is_error=True)
     except Exception as e:  # noqa: BLE001 - a tool must never kill the server
-        return tool_result({"error": "%s: %s" % (type(e).__name__, e)}, is_error=True)
+        return tool_result({"error": _diag("%s: %s" % (type(e).__name__, e))}, is_error=True)
 
 
 def respond(msg_id, result=None, error=None):
@@ -522,6 +578,9 @@ def handle(msg):
 
 def main():
     for line in sys.stdin:
+        if len(line.encode("utf-8", "replace")) > MAX_LINE_BYTES:
+            respond(None, error={"code": -32600, "message": "request too large"})
+            continue
         line = line.strip()
         if not line:
             continue

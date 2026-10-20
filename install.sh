@@ -38,6 +38,10 @@
 # Idempotent: re-running updates the skeleton and leaves the rest alone.
 set -eu
 
+# If a later step fails after the old office was moved aside, say where it is.
+BACKUP=""
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -n "$BACKUP" ]; then printf "\ninstall.sh: FAILED. The previous office is preserved at:\n  %s\n" "$BACKUP" >&2; fi' EXIT
+
 # ---------------------------------------------------------------------------
 # piped install: `curl -fsSL <url>/install.sh | bash -s -- [target] [options]`
 # ---------------------------------------------------------------------------
@@ -172,6 +176,17 @@ if [ "${#FREQ}" -gt 24 ]; then
 fi
 PROJECT_NAME=$(basename "$TARGET")
 
+# A frequency is an identity: seat names, the credentials directory and the
+# systemd unit all derive from it. Two projects must never silently share one.
+PROJECT_ID=$(CDPATH= cd -- "$TARGET" && pwd -P)
+if [ -f "$CRED_ROOT/$FREQ/project" ]; then
+  OWNER=$(cat "$CRED_ROOT/$FREQ/project")
+  [ "$OWNER" = "$PROJECT_ID" ] || die "frequency '$FREQ' already belongs to $OWNER — re-run with --name <distinct>"
+fi
+if [ "$DRY_RUN" -ne 1 ]; then
+  ( umask 077; mkdir -p "$CRED_ROOT/$FREQ"; printf '%s\n' "$PROJECT_ID" > "$CRED_ROOT/$FREQ/project" )
+fi
+
 say "ok   frequency: $FREQ"
 say "ok   project:   $PROJECT_NAME"
 
@@ -198,14 +213,11 @@ else
     # copy of decisions, learnings and current state.
     BACKUP="$TARGET/.agents-backup-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$BACKUP"
-    for d in memory hr worker; do
-      [ -d "$AGENTS_DIR/$d" ] && cp -R "$AGENTS_DIR/$d" "$BACKUP/$d"
-    done
-    if [ -f "$AGENTS_DIR/rules/project.md" ]; then
-      mkdir -p "$BACKUP/rules"
-      cp "$AGENTS_DIR/rules/project.md" "$BACKUP/rules/"
-    fi
-    say "ok   previous memory, hires, worker personas and project.md saved to $BACKUP"
+    # Keep everything except worktrees and runs: worktrees are checkouts (not
+    # office state) and runs are transient. Everything else is recoverable.
+    ( cd "$AGENTS_DIR" && tar -cf - --exclude=./worktrees --exclude=./runs . ) \
+      | ( cd "$BACKUP" && tar -xf - )
+    say "ok   previous office saved to $BACKUP"
   fi
 
   rm -rf "$AGENTS_DIR"
@@ -244,15 +256,13 @@ substitute() {
 
   find "$AGENTS_DIR" -type f \
     \( -name '*.md' -o -name '*.toml' -o -name '*.sh' -o -name '*.py' \) \
-    -print0 | while IFS= read -r -d '' f; do
-      sed -i \
+    -exec sed -i \
         -e "s|{{FREQUENCY}}|$_f|g" \
         -e "s|{{PROJECT_NAME}}|$_n|g" \
         -e "s|{{BASE_BRANCH}}|$_b|g" \
         -e "s|{{REMOTE}}|$_r|g" \
         -e "s|{{FOUNDER}}|$_d|g" \
-        "$f"
-    done
+        {} +
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -500,8 +510,8 @@ fi
 
 if [ ! -f "$MCP_SRC" ] || [ ! -f "$MCP_INSTALLER" ]; then
   say "skip MCP (missing $MCP_SRC or its install.sh)"
-elif [ -x "$MCP_DEST" ] && [ "$MCP_DEST" -nt "$MCP_SRC" ]; then
-  say "ok   MCP server already deployed: $MCP_DEST"
+elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
+  say "ok   MCP server already deployed and identical: $MCP_DEST"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would deploy the MCP server to $MCP_DEST"
 else
@@ -543,13 +553,22 @@ if [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
     say "would write $CRED_FILE"
   else
-    mkdir -p "$CRED_DIR"
-    umask 077
-    cat > "$CRED_FILE" <<EOF
+    # umask before mkdir: the directory must be 0700 from the start, not
+    # however the caller's umask happened to leave it. Write the file
+    # atomically so a failed update cannot destroy a valid token.
+    ( umask 077
+      mkdir -p "$CRED_DIR"
+      chmod 700 "$CRED_DIR"
+      tmp="$CRED_DIR/.credentials.tmp.$$"
+      trap 'rm -f "$tmp"' EXIT HUP INT TERM
+      cat > "$tmp" <<EOF
 ZOLLY_TELEGRAM_TOKEN=$TOKEN
 ZOLLY_ALLOWED_IDS=$IDS
 EOF
-    chmod 600 "$CRED_FILE"
+      chmod 600 "$tmp"
+      mv -f "$tmp" "$CRED_FILE"
+      trap - EXIT HUP INT TERM
+    )
     say "ok   credentials written: $CRED_FILE"
   fi
 else

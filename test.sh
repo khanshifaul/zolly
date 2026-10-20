@@ -11,8 +11,7 @@ python3 -m py_compile \
   .agents/hr/hr.py \
   .agents/zolly/mcp/zolly_mcp.py \
   .agents/zolly/mcp/test_mcp.py \
-  tests/test_hr.py \
-  tests/test_memory.py
+  tests/*.py
 echo "ok"
 
 echo "== unit tests"
