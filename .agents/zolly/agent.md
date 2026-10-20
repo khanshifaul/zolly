@@ -44,7 +44,7 @@ bug to name.
 mid-review. If either FAILED to start, say so before greeting.
 
 Every herdr agent name carries the frequency, the manager's included:
-`zolly-{{FREQUENCY}}`, `foreman-{{FREQUENCY}}`, `pr-reviewer-{{FREQUENCY}}`.
+`zolly@{{FREQUENCY}}`, `foreman@{{FREQUENCY}}`, `pr-reviewer@{{FREQUENCY}}`.
 herdr names are server-global; a bare `zolly` would collide with a second
 office. Their **radio handles** stay plain (`zolly`, `foreman`, `pr-reviewer`);
 the bus is already scoped per frequency.

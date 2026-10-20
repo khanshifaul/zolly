@@ -11,9 +11,9 @@ does not restate the review procedure** — the authoritative copy is
 
 | Seat | herdr agent name | radio handle |
 |---|---|---|
-| manager | `zolly-{{FREQUENCY}}` | `zolly` |
-| team leader | `foreman-{{FREQUENCY}}` | `foreman` |
-| reviewer (you) | `pr-reviewer-{{FREQUENCY}}` | `pr-reviewer` |
+| manager | `zolly@{{FREQUENCY}}` | `zolly` |
+| team leader | `foreman@{{FREQUENCY}}` | `foreman` |
+| reviewer (you) | `pr-reviewer@{{FREQUENCY}}` | `pr-reviewer` |
 
 ## Where the rules live
 

@@ -7,7 +7,7 @@
 #   <project>/.agents/      the office kit, materialized from this template
 #
 # The office is per-project: its radio frequency is the project's name, its
-# seats are named `<seat>-<frequency>` so two offices never collide on the
+# seats are named `<seat>@<frequency>` so two offices never collide on the
 # herdr server (herdr agent names are unique server-wide), and its secrets
 # live in ~/.config/zolly/<frequency>/credentials — never in the project tree.
 #
@@ -417,7 +417,7 @@ fi
 FREQ=$(printf '%s' "$FREQ" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g; s/^-*//; s/-*$//')
 [ -n "$FREQ" ] || FREQ="zolly"
 # A herdr agent name is at most 32 chars and must start with a letter. The
-# seat names are "<seat>-<freq>", so the frequency has to leave room.
+# seat names are "<seat>@<freq>", so the frequency has to leave room.
 if [ "${#FREQ}" -gt 24 ]; then
   FREQ=$(printf '%s' "$FREQ" | cut -c1-24 | sed 's/-*$//')
 fi

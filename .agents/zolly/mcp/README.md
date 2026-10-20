@@ -4,13 +4,13 @@ A stdio MCP server that reaches Zolly in her herdr pane, so any omp seat can
 hand her a message through a typed tool instead of a raw shell call.
 
 ```
-zolly_say(text)    → herdr agent prompt zolly-<frequency> <text>   (fire-and-forget; reports what happened)
+zolly_say(text)    → herdr agent prompt zolly@<frequency> <text>   (fire-and-forget; reports what happened)
 zolly_status()     → zolly pulse --json                (the office read, same shape as the CLI)
 ```
 
 ## Why a typed interface
 
-The only path into Zolly's pane was `herdr agent prompt zolly-<frequency> "<text>"` — used by
+The only path into Zolly's pane was `herdr agent prompt zolly@<frequency> "<text>"` — used by
 the Telegram listener and implemented as `HerdrClient::agent_prompt_only` in
 the zolly Rust tool. A shell call has no contract: on 2026-10-14 a timed-out
 `zolly foreman` returned a *pane fragment* (`TODO` + box-drawing) instead of a
@@ -56,7 +56,7 @@ The server is local stdio, but it still bounds every input:
 | returned diagnostics | 2 KiB, credential-shaped strings redacted |
 
 The agent is **bound to the project**: when `.agents/zolly/config.toml` resolves
-from `ZOLLY_ROOT` (or the cwd), the manager is `zolly-<frequency>`. A conflicting
+from `ZOLLY_ROOT` (or the cwd), the manager is `zolly@<frequency>`. A conflicting
 `ZOLLY_MCP_AGENT` is ignored with a warning, so an inherited environment cannot
 point this server at another office. The override is honoured only when no
 project config resolves.
@@ -70,7 +70,7 @@ project config resolves.
 Then add the printed entry to `~/.omp/agent/mcp.json` under `mcpServers`.
 That file is harness config **shared by every omp pane** — read it first, add one
 entry, leave the other entries untouched, keep it valid JSON. The entry is keyed
-per office (`zolly-<frequency>`), because one unqualified `zolly` entry can only
+per office (`zolly@<frequency>`), because one unqualified `zolly` entry can only
 reach one office; a second project needs its own entry under its own key.
 
 ## Verify a handshake (not just "the entry exists")

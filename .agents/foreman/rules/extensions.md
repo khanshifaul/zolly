@@ -17,10 +17,10 @@ workflows.md, project.md) also apply.
 
 | Seat | herdr agent name | radio handle |
 |---|---|---|
-| manager | `zolly-{{FREQUENCY}}` | `zolly` |
-| team leader (you) | `foreman-{{FREQUENCY}}` | `foreman` |
-| reviewer | `pr-reviewer-{{FREQUENCY}}` | `pr-reviewer` |
-| worker | `worker-{{FREQUENCY}}-<task-id>` | `worker-<task-id>` |
+| manager | `zolly@{{FREQUENCY}}` | `zolly` |
+| team leader (you) | `foreman@{{FREQUENCY}}` | `foreman` |
+| reviewer | `pr-reviewer@{{FREQUENCY}}` | `pr-reviewer` |
+| worker | `worker@{{FREQUENCY}}-<task-id>` | `worker-<task-id>` |
 
 herdr agent names are server-global, so every seat carries the frequency —
 the manager included. Radio handles are scoped per frequency, so they stay
@@ -34,8 +34,8 @@ branch based on a stale local base carries commits that are not in the merge
 into its PR. The base is always the merge.
 
 1. `herdr worktree create --branch foreman/<task-id> --base {{REMOTE}}/{{BASE_BRANCH}} --path .agents/worktrees/<task-id>` → gives pane + worktree
-2. `herdr agent start worker-{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>` → starts worker
-3. `zolly worker-brief worker-{{FREQUENCY}}-<task-id> --file <brief-path> --timeout-ms 1800000` → delivers the brief; returns only once the turn has **started**
+2. `herdr agent start worker@{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>` → starts worker
+3. `zolly worker-brief worker@{{FREQUENCY}}-<task-id> --file <brief-path> --timeout-ms 1800000` → delivers the brief; returns only once the turn has **started**
 4. **Monitor** — read the worker's pane while it runs; unblock it, adjust the
    brief, answer its questions. Reuse the same worker for a follow-up on the
    same task; it already holds the context.
@@ -68,7 +68,7 @@ Return exactly one line:
   OBJECTION: <what> — <where>
 EOF
 
-zolly worker-brief pr-reviewer-{{FREQUENCY}} --file .agents/inbox/review-<task-id>.md
+zolly worker-brief pr-reviewer@{{FREQUENCY}} --file .agents/inbox/review-<task-id>.md
 ```
 
 On PASS: reviewer returns merge commit SHA and PR URL.

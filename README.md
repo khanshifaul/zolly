@@ -88,17 +88,17 @@ are deliberately different:
   stay unprefixed.
 - **herdr agent name** — the seat's process name. These are unique
   **server-wide**, so two offices would collide on a bare `foreman`. They carry
-  the frequency: `foreman-my-app`, `pr-reviewer-my-app`.
+  the frequency: `foreman@my-app`, `pr-reviewer@my-app`.
 - **Credentials and systemd** — keyed by frequency, so one project cannot read
   another's token.
 
 Every seat carries the frequency on herdr, the manager included
-(`zolly-my-app`); radio handles stay unprefixed because the bus is scoped to the
+(`zolly@my-app`); radio handles stay unprefixed because the bus is scoped to the
 frequency already.
 
 Each project gets its **own** `zolly@<frequency>.service` instance, credentials
 file, working directory, radio frequency, and seat names
-(`zolly-<freq>`, `foreman-<freq>`, `pr-reviewer-<freq>`). They run
+(`zolly@<freq>`, `foreman@<freq>`, `pr-reviewer@<freq>`). They run
 independently; nothing is shared except the `~/.local/bin/zolly` binary.
 
 ### Where two offices can still collide
@@ -108,9 +108,9 @@ independently; nothing is shared except the `~/.local/bin/zolly` binary.
    Telegram answers `409 Conflict` — only one receives updates. Use a distinct
    bot per office, or run one listener and route.
 2. **MCP registration.** There is one deployed `zolly-mcp`, but the client
-   entry must be per office: `ZOLLY_MCP_AGENT=zolly-<freq>`,
+   entry must be per office: `ZOLLY_MCP_AGENT=zolly@<freq>`,
    `ZOLLY_ROOT=<project>`. The installer prints the entry keyed
-   `zolly-<freq>`; register one entry per office under a distinct key. A single
+   `zolly@<freq>`; register one entry per office under a distinct key. A single
    unqualified `zolly` entry reaches only one office.
 
 Frequency collisions (e.g. `guzia-high-school` vs `Guzia High School`) are

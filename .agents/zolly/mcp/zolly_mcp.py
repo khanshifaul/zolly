@@ -3,13 +3,13 @@
 
 Two tools:
 
-  zolly_say(text)   deliver `text` to Zolly's pane via `herdr agent prompt zolly-<frequency>`
+  zolly_say(text)   deliver `text` to Zolly's pane via `herdr agent prompt zolly@<frequency>`
                     and report what actually happened (delivered / the exact
                     error), fire-and-forget — no wait for a reply turn.
   zolly_status()    the office read: `zolly pulse --json`, shape-identical.
 
 Why this exists: nothing exposed Zolly as a callable interface. The only path
-into her pane was a raw shell call, `herdr agent prompt zolly-<frequency> "<text>"`, which
+into her pane was a raw shell call, `herdr agent prompt zolly@<frequency> "<text>"`, which
 has no contract — on 2026-10-14 a timed-out `zolly foreman` returned a pane
 fragment instead of a failure, and a caller could not tell "the agent replied"
 from "the agent is busy" (t-foreman-reply-capture). This is a typed,
@@ -26,7 +26,7 @@ this office. Deploy: `.agents/zolly/mcp/install.sh` (copies this file to
 outside the repo, see README.md in this directory.
 
 Environment overrides (all optional):
-  ZOLLY_MCP_AGENT       herdr agent name to reach   (default: zolly-<frequency>,
+  ZOLLY_MCP_AGENT       herdr agent name to reach   (default: zolly@<frequency>,
                                                       read from .agents/zolly/config.toml)
   ZOLLY_BIN             path to the `zolly` binary         (default: which zolly,
                                                           else ~/.local/bin/zolly)
@@ -104,7 +104,7 @@ def _agent_name():
     freq = _read_frequency(root)
     override = os.environ.get("ZOLLY_MCP_AGENT")
     if freq:
-        expected = "zolly-" + freq
+        expected = "zolly@" + freq
         if override and override != expected:
             sys.stderr.write(
                 "zolly-mcp: ignoring ZOLLY_MCP_AGENT=%r; this project is %s\n"
@@ -450,7 +450,7 @@ TOOLS = [
         "name": "zolly_say",
         "description": (
             "Deliver a message to Zolly (the hourly operational seat) in her "
-            "live herdr pane, via `herdr agent prompt zolly-<frequency>`. Fire-and-forget: "
+            "live herdr pane, via `herdr agent prompt zolly@<frequency>`. Fire-and-forget: "
             "it returns as soon as the text is submitted and does NOT wait for "
             "Zolly's reply turn. Returns what actually happened — whether the "
             "submission was accepted (herdr acks with an `agent_prompted` "

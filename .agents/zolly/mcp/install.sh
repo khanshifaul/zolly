@@ -6,7 +6,7 @@
 # after editing zolly_mcp.py; the running server is the file at DEST.
 #
 # Usage: install.sh [DEST] [--frequency <freq>] [--root <repo>]
-#   --frequency adds ZOLLY_MCP_AGENT=zolly-<freq> to the printed entry, so the
+#   --frequency adds ZOLLY_MCP_AGENT=zolly@<freq> to the printed entry, so the
 #   server reaches this office's manager rather than the first bare `zolly`.
 #   --root adds ZOLLY_ROOT, so the server resolves `zolly pulse` without
 #   depending on the MCP client's working directory.
@@ -33,9 +33,9 @@ echo "installed: $DEST"
 ENV_JSON=""
 ENTRY_KEY="zolly"
 if [ -n "$FREQ" ]; then
-  ENTRY_KEY="zolly-$FREQ"
+  ENTRY_KEY="zolly@$FREQ"
   ENV_JSON=",
-      \"env\": { \"ZOLLY_MCP_AGENT\": \"zolly-$FREQ\", \"ZOLLY_ROOT\": \"${ROOT:-.}\" }"
+      \"env\": { \"ZOLLY_MCP_AGENT\": \"zolly@$FREQ\", \"ZOLLY_ROOT\": \"${ROOT:-.}\" }"
 fi
 
 echo
