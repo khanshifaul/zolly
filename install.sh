@@ -13,7 +13,8 @@
 #
 # Usage:
 #   ./install.sh [target-dir] [options]
-#   curl -fsSL <install.sh-url> | ZOLLY_KIT_URL=<tarball-url> bash -s -- [target-dir] [options]
+#   curl -fsSL https://raw.githubusercontent.com/khanshifaul/zolly/main/install.sh \
+#     | bash -s -- [target-dir] [options]
 #
 # The target defaults to the current directory. The install is per project:
 # run it once per repository; each gets its own office.
@@ -32,7 +33,8 @@
 #   ZOLLY_TELEGRAM_TOKEN   bot token (prompted if absent and Telegram wanted)
 #   ZOLLY_ALLOWED_IDS      comma-separated founder chat ids (prompted if absent)
 #   ZOLLY_FOUNDER          founder name, non-interactive
-#   ZOLLY_KIT_URL          tarball of this kit (required only when piped)
+#   ZOLLY_KIT_URL          tarball of this kit (piped only; default: GitHub main)
+#   ZOLLY_REF              branch or tag to fetch when piped (default: main)
 #   ZOLLY_MCP_DEST         where to deploy the MCP server (default ~/.local/bin)
 #
 # Idempotent: re-running updates the skeleton and leaves the rest alone.
@@ -50,7 +52,10 @@ trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -n "$BACKUP" ]; then printf "\ninstall.sh: 
 # it. The install is still per-project: the target is the argument (or the
 # current directory), and nothing is installed machine-wide except the binary.
 if [ ! -f "$0" ]; then
-  : "${ZOLLY_KIT_URL:?piped install needs ZOLLY_KIT_URL=<tarball-url>; or clone the kit and run ./install.sh}"
+  # The script cannot know its own URL, so the kit's default home is embedded.
+  # ZOLLY_REF pins a branch or tag; ZOLLY_KIT_URL overrides the tarball entirely.
+  ZOLLY_REF="${ZOLLY_REF:-main}"
+  : "${ZOLLY_KIT_URL:=https://github.com/khanshifaul/zolly/archive/$ZOLLY_REF.tar.gz}"
   _tmp=$(mktemp -d)
   trap 'rm -rf "$_tmp"' EXIT INT TERM
   if command -v curl >/dev/null 2>&1; then

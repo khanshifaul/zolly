@@ -12,44 +12,44 @@ That writes `~/Projects/my-app/.agents/` — the office kit — and prints the
 follow-ups it will not do for you (Telegram credentials, the systemd unit, the
 `zolly-seat` shell block).
 
-## One-line install
-
-The installer also runs from a pipe. It fetches the published kit, then installs
-into the target — the target is still a project, not the machine.
+## Install with one command
 
 ```sh
-ZOLLY_REPO=https://github.com/khanshifaul/zolly
-curl -fsSL "$ZOLLY_REPO/raw/main/install.sh" \
-  | ZOLLY_KIT_URL="$ZOLLY_REPO/archive/refs/heads/main.tar.gz" \
-    bash -s -- ~/Projects/my-app --founder "Your Name"
+curl -fsSL https://raw.githubusercontent.com/khanshifaul/zolly/main/install.sh \
+  | bash -s -- ~/Projects/my-app --founder "Your Name"
 ```
 
-Run it **inside** the project and omit the target:
+Run it **inside** a project and omit the path:
 
 ```sh
 cd ~/Projects/my-app
-curl -fsSL "$ZOLLY_REPO/raw/main/install.sh" \
-  | ZOLLY_KIT_URL="$ZOLLY_REPO/archive/refs/heads/main.tar.gz" \
-    bash -s -- --founder "Your Name"
+curl -fsSL https://raw.githubusercontent.com/khanshifaul/zolly/main/install.sh \
+  | bash -s -- --founder "Your Name"
 ```
 
-The target defaults to the current directory. Everything it writes belongs to
-that project: `.agents/`, the frequency (the directory name),
-`~/.config/zolly/<freq>/credentials`, and the systemd unit. A second project
-gets a second office; the binary is the only machine-wide piece, installed once.
+The target defaults to the current directory. The pipe only downloads the kit;
+everything it writes belongs to that project: `.agents/`, the frequency (the
+directory name), `~/.config/zolly/<freq>/credentials`, and the systemd unit. A
+second project gets a second office; the binary is the only machine-wide piece,
+installed once.
 
-Both URLs are live: the installer fetches the kit tarball, installs into the
-target, and removes the temporary copy. No clone is left on disk.
-
-To pin a release, replace `main` with a tag in **both** URLs — the script and
-the tarball must come from the same revision:
+To pin a release, use a tag in the script URL and tell the installer to fetch
+the matching archive:
 
 ```sh
 ZOLLY_REF=v0.1.0
-curl -fsSL "$ZOLLY_REPO/raw/$ZOLLY_REF/install.sh" \
-  | ZOLLY_KIT_URL="$ZOLLY_REPO/archive/refs/tags/$ZOLLY_REF.tar.gz" \
-    bash -s -- ~/Projects/my-app --founder "Your Name"
+curl -fsSL "https://raw.githubusercontent.com/khanshifaul/zolly/$ZOLLY_REF/install.sh" \
+  | ZOLLY_REF="$ZOLLY_REF" bash -s -- ~/Projects/my-app --founder "Your Name"
 ```
+
+The command installs the office **and** the shared `zolly` binary. On a machine
+without the Rust tool source (or a preinstalled binary), add `--no-binary`; the
+office skeleton still installs, and the binary can be added later with
+`ZOLLY_TOOL_DIR=<crate> ./install.sh ...`.
+
+`ZOLLY_KIT_URL=<tarball>` overrides the download entirely (a fork, a mirror, or
+a local file). The clone path still works: `./install.sh <target>` — same
+installer, no download.
 
 ## What you get
 
@@ -141,7 +141,8 @@ install.sh [target-dir] [options]
 | `--dry-run` | print what would happen, change nothing |
 
 Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER`,
-`ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`.
+`ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`,
+`ZOLLY_REF`.
 
 It refuses to run when the target is not a git repository, when the base
 branch does not exist, when the target already has `.agents/` (without
