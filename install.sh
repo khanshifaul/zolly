@@ -144,20 +144,11 @@ stray_env=$(find "$TEMPLATE" -name '.env' -o -name '*.env' | head -20)
 step "preconditions"
 
 if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
-  # A blank folder is the normal way to start a project: initialize it rather
-  # than making the user run git first. A non-empty tree that is not a repo is
-  # left alone — creating a repo inside someone's files is not ours to do.
-  if [ -z "$(ls -A "$TARGET" 2>/dev/null)" ]; then
-    git -C "$TARGET" init -q -b "$BASE_BRANCH" || die "could not initialize git in $TARGET"
-    say "ok   initialized git repository on $BASE_BRANCH"
-  else
-    die "target is not a git repository: $TARGET
+  die "target is not a git repository: $TARGET
   run: cd $TARGET && git init -b $BASE_BRANCH
-  (only an empty directory is initialized automatically)"
-  fi
-else
-  say "ok   git repository: $TARGET"
+  (a commit is not required)"
 fi
+say "ok   git repository: $TARGET"
 
 if [ -e "$TARGET/.agents" ] && [ "$FORCE" -ne 1 ]; then
   die "$TARGET/.agents already exists — re-run with --force to overwrite it"
@@ -574,6 +565,7 @@ CRED_FILE="$CRED_DIR/credentials"
 
 TOKEN="${ZOLLY_TELEGRAM_TOKEN:-}"
 IDS="${ZOLLY_ALLOWED_IDS:-}"
+HAVE_CREDS=0
 
 if [ -n "$FOUNDER" ] && { [ -z "$TOKEN" ] || [ -z "$IDS" ]; }; then
   if [ -f "$CRED_FILE" ]; then
@@ -594,6 +586,7 @@ if [ -n "$FOUNDER" ] && { [ -z "$TOKEN" ] || [ -z "$IDS" ]; }; then
 fi
 
 if [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
+  HAVE_CREDS=1
   if [ "$DRY_RUN" -eq 1 ]; then
     say "would write $CRED_FILE"
   else
@@ -628,6 +621,10 @@ UNIT_FILE="$SERVICE_DIR/zolly@$FREQ.service"
 
 if [ "$DO_SYSTEMD" -ne 1 ]; then
   say "skip systemd (--no-systemd)"
+elif [ "$HAVE_CREDS" -ne 1 ]; then
+  # A listener with no token would restart-loop. Do not create a unit that
+  # cannot work; tell the user how to get one after adding credentials.
+  say "skip systemd (no Telegram credentials) — add a token to $CRED_FILE, then re-run with --force"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would write $UNIT_FILE"
 else
@@ -666,6 +663,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 say "office installed: $AGENTS_DIR"
+if [ "$UNBORN" -eq 1 ]; then
+  say ""
+  say "note this repository has no commits yet. Make the first commit before"
+  say "     dispatching a task — task branches are cut from '$BASE_BRANCH'."
+fi
 say ""
 say "Next steps (printed, not run — they touch your shell and your services):"
 say ""
@@ -706,6 +708,14 @@ say "4. Write this project's truths into $AGENTS_DIR/rules/project.md —"
 say "   the architecture, where things live, the size thresholds. The template"
 say "   shipped that file empty on purpose: it is yours."
 say ""
-say "5. If you want Telegram, put the token in $CRED_FILE"
-say "   (ZOLLY_TELEGRAM_TOKEN=... and ZOLLY_ALLOWED_IDS=...), then run"
-say "   systemctl --user daemon-reload && systemctl --user enable --now zolly@$FREQ.service"
+say "5. Telegram:"
+if [ "$HAVE_CREDS" -eq 1 ]; then
+  say "   configured. Enable the listener:"
+  say "     systemctl --user daemon-reload"
+  say "     systemctl --user enable --now zolly@$FREQ.service"
+else
+  say "   not configured, so no listener unit was written. Put the token in"
+  say "     $CRED_FILE"
+  say "   (ZOLLY_TELEGRAM_TOKEN=... and ZOLLY_ALLOWED_IDS=...), then re-run the"
+  say "   install command with --force (memory, hires and project.md are kept)."
+fi

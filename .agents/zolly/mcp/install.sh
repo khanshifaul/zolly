@@ -38,7 +38,7 @@ fi
 
 echo
 echo "Add this to ~/.omp/agent/mcp.json under \"mcpServers\" (one entry;"
-echo "leave the existing \"deepseek\" entry untouched):"
+echo "leave the other entries untouched):"
 echo
 cat <<JSON
     "zolly": {

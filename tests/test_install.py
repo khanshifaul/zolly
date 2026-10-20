@@ -85,17 +85,14 @@ class InstallTests(unittest.TestCase):
         self.assertIn("kept this entry across a reinstall", learnings)
         self.assertTrue(list(repo.glob(".agents-backup-*")), "no backup directory was kept")
 
-    def test_empty_folder_is_initialized(self):
+    def test_empty_folder_without_git_is_refused(self):
         repo = self.root / "blank"
         repo.mkdir()
         result = self.install(repo)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((repo / ".git").is_dir())
-        self.assertTrue((repo / ".agents" / "zolly" / "config.toml").is_file())
-        head = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"], cwd=repo, capture_output=True
-        )
-        self.assertNotEqual(head.returncode, 0, "the installer must not create a commit")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a git repository", result.stderr)
+        self.assertFalse((repo / ".git").exists(), "the installer must not create a repo")
+        self.assertFalse((repo / ".agents").exists())
 
     def test_unborn_repo_installs_without_a_commit(self):
         repo = self.make_repo("fresh", commit=False)
@@ -122,6 +119,36 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
         self.assertIn('base_branch = "master"', config)
+
+    def test_no_credentials_skips_the_listener_unit(self):
+        repo = self.make_repo("app")
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--founder", "Test"],
+            env=self.env, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skip systemd (no Telegram credentials)", result.stdout)
+        self.assertFalse(
+            (self.home / ".config" / "systemd" / "user" / "zolly@app.service").exists()
+        )
+
+    def test_credentials_write_the_unit_with_restricted_modes(self):
+        import stat
+
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--founder", "Test"],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cred_dir = self.home / ".config" / "zolly" / "app"
+        cred_file = cred_dir / "credentials"
+        self.assertEqual(stat.S_IMODE(cred_dir.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(cred_file.stat().st_mode), 0o600)
+        self.assertTrue(
+            (self.home / ".config" / "systemd" / "user" / "zolly@app.service").is_file()
+        )
 
     def test_frequency_collision_is_refused(self):
         first = self.make_repo("app")

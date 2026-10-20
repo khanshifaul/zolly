@@ -33,20 +33,18 @@ directory name), `~/.config/zolly/<freq>/credentials`, and the systemd unit. A
 second project gets a second office; the binary is the only machine-wide piece,
 installed once.
 
-A brand-new folder needs nothing first: the installer initializes an empty
-directory itself. If you prefer to create the repo, `git init` is enough — no
-commit is required.
+The target must be a git repository. `git init` is enough — no commit is
+required:
 
 ```sh
 mkdir -p ~/Projects/my-app && cd ~/Projects/my-app
+git init -b main
 curl -fsSL https://raw.githubusercontent.com/khanshifaul/zolly/main/install.sh \
   | bash -s -- --founder "Your Name"
 ```
 
-An empty directory is initialized on `main` (or the branch passed with
-`--base-branch`). A non-empty directory that is not already a repository is
-left untouched and refused. If the repo is on `master`, the installer uses
-`master` unless you pass `--base-branch`.
+A directory that is not a repository is refused and left untouched. If the repo
+is on `master`, the installer uses `master` unless you pass `--base-branch`.
 
 Installation needs no commit. The **first task** does: task branches are cut
 from the base branch, so make the project's first commit when there is
