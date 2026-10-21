@@ -229,7 +229,9 @@ When the queue is empty and no seat is working, run the **idle inquiry** in
    commission through foreman (`gate: auto`), may start without the founder.
    Foreman may use a worker. Research may write only its result file on a
    branch; it may not change product code, spend, publish, contact a customer,
-   or touch production.
+   or touch production. If a cheap `task` model is available, it may generate
+   candidate questions (the subconscious); verify them before they reach the
+   founder.
 4. **Building is not pre-approved.** A change still goes through `zolly route`
    and the normal gate. Money, production, publishing and customers are always
    `gate: human`.

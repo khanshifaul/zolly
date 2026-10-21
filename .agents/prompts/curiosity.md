@@ -33,6 +33,18 @@ run tests, search the web, and write its result file on a branch. It may not
 change product code, spend, publish, contact a customer, or touch production.
 Those stay `gate: human`.
 
+## Cheap first pass
+
+If the `task` role is available, hand the raw scan to one `task` subagent
+(model role `task`, currently `kilo/kilo-auto/free`). Ask only for candidate
+questions with `file:line` evidence — no prose, no recommendations.
+
+Treat every candidate as a **claim**: verify it against the tree yourself and
+discard anything the code already answers. The subagent is the cheap
+candidate generator; it never speaks to the founder, never writes
+`OPEN-QUESTIONS.md`, and never approves a task. If the role is unavailable or
+the output is noise, do the pass yourself.
+
 ## Ask
 
 At most **3** questions, grouped by category:
