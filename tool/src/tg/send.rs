@@ -437,6 +437,24 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
 /// converts first. The engine is Parakeet, and `parakeet-redux` is selected by
 /// path because voxtype's catalog does not list downloaded directory models.
 /// `ZOLLY_STT_MODEL` overrides the model with a name or a directory.
+/// The URL Telegram serves a bot file from.
+///
+/// Telegram serves files from `/file/bot<token>/<file_path>`, NOT from
+/// `/bot<token>/<file_path>`. `api_root()` already ends in `/bot`, so the
+/// download URL must spell out the `file/bot` segment. Building
+/// `/bot<token>/<path>` returns HTTP 404 with a 55-byte JSON error body;
+/// written to the temp file as if it were audio, that made ffmpeg report
+/// "Error opening input files: End of file" and reach the founder as "ffmpeg
+/// could not decode the note". Measured against the live API on 2026-10-22:
+/// the old URL returns 404 and 55 bytes of JSON; this one returns 200 and
+/// the real file.
+fn voice_download_url(api_root: &str, token: &str, file_path: &str) -> String {
+    // `api_root` is `<base>/bot`; strip the trailing `/bot` so the segment
+    // is spelled exactly once.
+    let base = api_root.strip_suffix("/bot").unwrap_or(api_root);
+    format!("{base}/file/bot{token}/{file_path}")
+}
+
 pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
     let client = get_client();
 
@@ -466,10 +484,17 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
             )
         })?;
 
-    // 2. Download the ogg/opus file
-    let url = format!("{}{token}/{file_path}", api_root());
-    let audio = send_redacted(client.get(&url), "voice file download failed")
-        .await?
+    // 2. Download the ogg/opus file.
+    let url = voice_download_url(&api_root(), token, &file_path);
+    let response = send_redacted(client.get(&url), "voice file download failed").await?;
+    // Never hand a non-2xx body to the decoder: an error body is not audio,
+    // and its `description` names the real cause.
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("voice download failed: HTTP {status} — {body}");
+    }
+    let audio = response
         .bytes()
         .await
         .map_err(|e| RequestFailure::from_reqwest("voice file read failed", &e))?;
@@ -730,6 +755,51 @@ mod voice_tests {
         let expected = format!("🎤 Voice (text fallback):\n{}", message);
         assert_eq!(expected, "🎤 Voice (text fallback):\nhello founder");
         assert!(expected.starts_with("🎤 Voice (text fallback):\n"));
+    }
+}
+
+#[cfg(test)]
+mod download_url_tests {
+    use super::*;
+
+    /// Telegram serves bot files from `/file/bot<token>/<file_path>`.
+    ///
+    /// The API root already ends in `/bot`, so the download URL must spell
+    /// out the `file/bot` segment. Building `/bot<token>/<path>` returns
+    /// HTTP 404 with a 55-byte JSON error body; written to the temp file as
+    /// if it were audio, that made ffmpeg report "Error opening input files:
+    /// End of file" and reach the founder as "ffmpeg could not decode the
+    /// note" (measured against the live API, 2026-10-22).
+    ///
+    /// The URL is built by `voice_download_url` in the parent module, so
+    /// this test pins the function the download path actually calls — not a
+    /// copy of it.
+
+    #[test]
+    fn voice_download_url_carries_the_file_segment() {
+        let url = voice_download_url(
+            "https://api.telegram.org/bot",
+            "123:ABC",
+            "voice/file_9.oga",
+        );
+        assert_eq!(
+            url,
+            "https://api.telegram.org/file/bot123:ABC/voice/file_9.oga"
+        );
+        // The bug this pins: the API root already ends in `/bot`, so
+        // `"{api_root}{token}/{path}"` produced `/bot<token>/<path>` — the
+        // path Telegram does NOT serve files from.
+        assert!(!url.contains("/botfile/bot"));
+        assert!(url.contains("/file/bot"));
+    }
+
+    #[test]
+    fn voice_download_url_never_drops_the_file_segment() {
+        // Whatever the API root looks like, the `/file/bot` segment and the
+        // token must both be present, in that order.
+        let url = voice_download_url("https://mirror.example/bot", "TOK", "a/b.oga");
+        assert!(url.contains("/file/botTOK/"));
+        assert!(url.ends_with("/a/b.oga"));
     }
 }
 
