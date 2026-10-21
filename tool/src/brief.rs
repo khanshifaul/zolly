@@ -79,7 +79,11 @@ fn now_secs() -> u64 {
 }
 
 fn is_manager(name: &str) -> bool {
-    MANAGER_NAMES.iter().any(|m| *m == name)
+    // Agent names carry the frequency (`foreman-guzia-high-school`); the bare
+    // handles in MANAGER_NAMES are the radio handles, not the herdr names.
+    MANAGER_NAMES
+        .iter()
+        .any(|m| *m == name || name.starts_with(&format!("{m}-")))
 }
 
 /// Is this herdr agent a live worker *right now*?
@@ -123,26 +127,6 @@ fn worktree_stats(root: &Path) -> (usize, bool) {
     (linked, linked > WORKTREE_LEAK_THRESHOLD)
 }
 
-/// Scan the queue for `.md` files whose frontmatter marks an unresolved
-/// `gate: human`. Content-only: a queued task is by definition not merged,
-/// so the merge-aware rule cannot apply to this scan.
-fn unresolved_gates_in(dir: &Path) -> Result<Vec<String>> {
-    let mut gates = Vec::new();
-    if !dir.exists() {
-        return Ok(gates);
-    }
-    for e in std::fs::read_dir(dir)?.filter_map(|e| e.ok()) {
-        let path = e.path();
-        if path.extension().map(|ext| ext == "md").unwrap_or(false) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if crate::queue::is_unresolved_gate(&content) {
-                    gates.push(e.file_name().to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-    Ok(gates)
-}
 
 /// Run `git` in `root`; `true` only on a clean exit. Merge detection never
 /// fails the brief — an unanswerable question is handled by the caller as
@@ -196,26 +180,26 @@ fn merged_into_integration(root: &Path, refname: &str, result_name: &str) -> boo
 /// so the merge satisfied it and nobody is waiting. Everything else with a
 /// gate is waiting: unmerged work whatever its value, and merged work whose
 /// value carries a qualifier naming a decision a merge cannot make.
-fn result_gates(root: &Path, dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
+pub(crate) fn result_gates(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
     let mut waiting = Vec::new();
     let mut historical = Vec::new();
-    if !dir.exists() {
-        return Ok((waiting, historical));
-    }
     let refname = integration_ref(root);
-    for e in std::fs::read_dir(dir)?.filter_map(|e| e.ok()) {
-        let path = e.path();
-        if !path.extension().map(|ext| ext == "md").unwrap_or(false) {
-            continue;
-        }
+    for path in crate::queue::result_files(root) {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
         let fm = crate::queue::parse_frontmatter(&content);
-        if !fm.gate_human || fm.approved {
+        if !fm.gate_human {
             continue;
         }
-        let name = e.file_name().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if fm.approved {
+            historical.push(name);
+            continue;
+        }
         let merged = refname
             .map(|r| merged_into_integration(root, r, &name))
             .unwrap_or(false);
@@ -359,13 +343,11 @@ pub fn generate_brief(root: &Path) -> Result<Brief> {
     // loud list must read the same on every run.
     unparseable_results.sort();
 
-    // Gates. Results are read merge-aware: a bare `gate: human` on a task
-    // whose result file already sits on the integration ref was settled by
-    // the merge and must not be reported as waiting — four such stale
-    // markers made every brief claim decisions that could not be pending.
-    // The queue scan stays content-only: a queued task is not merged yet.
-    let (mut gates, mut historical_gates) = result_gates(root, &results_dir)?;
-    gates.extend(unresolved_gates_in(&root.join(".agents/queue"))?);
+    // Gates. One canonical file per task: the branch copy when a worktree
+    // exists, otherwise the main result. The queue file is a brief, not a
+    // gate store; reading both is how an approval in one copy and a gate in
+    // the other never meet.
+    let (mut gates, mut historical_gates) = result_gates(root)?;
     gates.sort();
     historical_gates.sort();
 
@@ -454,11 +436,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manager_names_are_recognised() {
+    fn manager_names_are_recognised_with_the_frequency_suffix() {
         assert!(is_manager("zolly"));
         assert!(is_manager("foreman"));
         assert!(is_manager("pr-reviewer"));
+        assert!(is_manager("zolly-zylosync"));
+        assert!(is_manager("foreman-guzia-high-school"));
+        assert!(is_manager("pr-reviewer-pijunctionbd"));
         assert!(!is_manager("worker-fix-1"));
+        assert!(!is_manager("worker-zylosync-t-project-truths"));
         assert!(!is_manager("weld"));
     }
 
@@ -477,22 +463,6 @@ mod tests {
         assert!(WORKTREE_LEAK_THRESHOLD >= 4);
         assert!(WORKTREE_LEAK_THRESHOLD <= 32);
     }
-    #[test]
-    fn gate_detection_reads_frontmatter() {
-        let dir = std::env::temp_dir().join(format!("zolly-gate-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        std::fs::write(dir.join("t-gate.md"), "---\nid: t-gate\nstatus: done\ngate: human\n---\n\nBody").unwrap();
-        std::fs::write(dir.join("t-approved.md"), "---\nid: t-approved\ngate: human\napproved: yes\n---\n\nBody").unwrap();
-        std::fs::write(dir.join("t-nogate.md"), "---\nid: t-nogate\nstatus: done\n---\n\nBody").unwrap();
-
-        let gates = unresolved_gates_in(&dir).unwrap();
-        assert_eq!(gates, vec!["t-gate.md".to_string()]);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn settled_result_is_never_reported_as_stalled() {
         // Regression: a done+merged result must not show up as
@@ -736,55 +706,68 @@ mod tests {
 
     #[test]
     fn approval_marker_reads_branch_copy_only() {
-        // `gate: human` + `approved: yes` on the branch copy parses as
-        // approved (not waiting). A bare `gate: human` does not. An
-        // `approved: yes` that exists only in the main checkout copy is
-        // invisible here — result_gates reads `dir`, the branch checkout,
-        // never the main checkout — so a bare gate stays waiting.
-        let dir = std::env::temp_dir().join(format!(
-            "zolly-approval-test-{}",
-            std::process::id()
+        // The branch copy is canonical. A stale `approved: yes` in the main
+        // checkout must not clear a bare branch gate; a branch approval is
+        // historical even when the main copy is bare.
+        let root = std::env::temp_dir().join(format!(
+            "zolly-approval-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
         ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let main = root.join(".agents/results");
+        std::fs::create_dir_all(&main).unwrap();
+
+        let branch_bare = root.join(".agents/worktrees/t-branch-bare/.agents/results");
+        std::fs::create_dir_all(&branch_bare).unwrap();
+        std::fs::write(
+            branch_bare.join("t-branch-bare.md"),
+            "---\nid: t-branch-bare\ngate: human\n---\nBody",
+        )
+        .unwrap();
+        std::fs::write(
+            main.join("t-branch-bare.md"),
+            "---\nid: t-branch-bare\ngate: human\napproved: yes\n---\nStale main copy",
+        )
+        .unwrap();
+
+        let branch_approved = root.join(".agents/worktrees/t-branch-approved/.agents/results");
+        std::fs::create_dir_all(&branch_approved).unwrap();
+        std::fs::write(
+            branch_approved.join("t-branch-approved.md"),
+            "---\nid: t-branch-approved\ngate: human\napproved: yes\n---\nBody",
+        )
+        .unwrap();
+        std::fs::write(
+            main.join("t-branch-approved.md"),
+            "---\nid: t-branch-approved\ngate: human\n---\nStale main copy",
+        )
+        .unwrap();
 
         std::fs::write(
-            dir.join("t-approved.md"),
-            "---\nid: t-approved\ngate: human\napproved: yes\n---\nBody",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("t-bare.md"),
-            "---\nid: t-bare\ngate: human\n---\nBody",
-        )
-        .unwrap();
-        // Bare gate; an `approved: yes` exists only in a main-checkout copy
-        // this function never reads → still waiting.
-        std::fs::write(
-            dir.join("t-main-only.md"),
+            main.join("t-main-only.md"),
             "---\nid: t-main-only\ngate: human\n---\nBody",
         )
         .unwrap();
 
-        let (mut waiting, historical) = result_gates(&dir, &dir).unwrap();
+        let (mut waiting, mut historical) = result_gates(&root).unwrap();
         waiting.sort();
+        historical.sort();
         assert_eq!(
             waiting,
-            vec![
-                "t-bare.md".to_string(),
-                "t-main-only.md".to_string()
-            ],
-            "bare gates stay waiting; the branch-approved file is not waiting"
+            vec!["t-branch-bare.md".to_string(), "t-main-only.md".to_string()],
+            "a main-copy approval must not clear a bare branch gate"
         );
-        assert!(
-            historical.is_empty(),
-            "nothing is historical on an unmerged branch, got: {:?}",
-            historical
+        assert_eq!(
+            historical,
+            vec!["t-branch-approved.md".to_string()],
+            "a branch approval is historical, not waiting"
         );
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
     }
-
     #[test]
     fn generate_brief_on_empty_root_does_not_panic() {
         let dir = std::env::temp_dir().join(format!(

@@ -101,6 +101,44 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("budget — OK", result.stdout)
 
 
+    def test_add_refuses_to_cross_the_byte_budget(self):
+        first = self.run_memory("add", "learning", "x" * 20000)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = sum(p.stat().st_size for p in self.dir.glob("*.md"))
+        second = self.run_memory("add", "learning", "y" * 5000)
+        self.assertEqual(second.returncode, 3, second.stderr)
+        self.assertIn("REFUSING WRITE", second.stderr)
+        after = sum(p.stat().st_size for p in self.dir.glob("*.md"))
+        self.assertEqual(after, before, "a refused add must not write")
+        self.assertLessEqual(after, 24576)
+
+    def test_archive_reduces_an_over_byte_store_within_the_entry_bound(self):
+        # Three entries, well under BOUND_LEARNING=30, but over the byte
+        # budget. The entry-count roll is not enough; archive must drop the
+        # oldest entry until the live files fit.
+        body = "# Learnings\n\n"
+        for i in range(1, 4):
+            body += (
+                f"## L-{i:04d} | 2026-01-0{i} | believed | main\n\n"
+                + ("z" * 9000)
+                + "\n\n"
+            )
+        (self.dir / "learnings.md").write_text(body, encoding="utf-8")
+        self.assertGreater(
+            sum(p.stat().st_size for p in self.dir.glob("*.md")), 24576
+        )
+        check = self.run_memory("check")
+        self.assertEqual(check.returncode, 3)
+        archived = self.run_memory("archive")
+        self.assertEqual(archived.returncode, 0, archived.stderr)
+        live = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        self.assertLessEqual(
+            sum(p.stat().st_size for p in self.dir.glob("*.md")), 24576
+        )
+        self.assertNotIn("L-0001", live, "the oldest entry should have rolled")
+        self.assertIn("L-0003", live, "the newest entries stay live")
+        self.assertTrue((self.dir / "archive" / "learnings-2026-01.md").is_file())
+
     def test_search_returns_the_entry_id(self):
         self.assertEqual(
             self.run_memory("add", "learning", "The lock is fd 9.").returncode, 0

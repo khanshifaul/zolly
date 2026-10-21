@@ -35,19 +35,38 @@ struct Focus {
 
 pub fn run(root: &Path, force: bool, wake: bool) -> Result<Ponder> {
     let signals = curious::inspect(root)?;
-    let brief = crate::brief::generate_brief(root).context("Failed to read the brief")?;
-    let busy = signals.queue_pending > 0
-        || brief.waiting.workers > 0
-        || !brief.gates.is_empty()
-        || !brief.waiting.stalled_results.is_empty();
+    // A missing brief means the office state is unknown. Do not guess "idle"
+    // from queue depth alone: that is how a worker in a worktree gets stepped
+    // on. `--force` is the explicit override.
+    let brief = match crate::brief::generate_brief(root) {
+        Ok(brief) => Some(brief),
+        Err(error) if !force => {
+            return Ok(Ponder {
+                focus: "none".into(),
+                reasons: vec![format!("office state unavailable: {error}")],
+                signals,
+                written: None,
+                skipped: Some("brief unavailable".into()),
+                waked: None,
+            })
+        }
+        Err(_) => None,
+    };
+    let workers = brief.as_ref().map(|b| b.waiting.workers).unwrap_or(0);
+    let gates = brief.as_ref().map(|b| b.gates.len()).unwrap_or(0);
+    let stalled = brief
+        .as_ref()
+        .map(|b| b.waiting.stalled_results.len())
+        .unwrap_or(0);
+    let busy = signals.queue_pending > 0 || workers > 0 || gates > 0 || stalled > 0;
     if busy && !force {
         return Ok(Ponder {
             focus: "none".into(),
             reasons: vec![
                 format!("queue_pending={}", signals.queue_pending),
-                format!("workers={}", brief.waiting.workers),
-                format!("gates={}", brief.gates.len()),
-                format!("stalled_results={}", brief.waiting.stalled_results.len()),
+                format!("workers={workers}"),
+                format!("gates={gates}"),
+                format!("stalled_results={stalled}"),
             ],
             signals,
             written: None,
@@ -213,10 +232,24 @@ fn wake_manager(root: &Path, note: &Path) -> Option<String> {
     let office = crate::office::Office::load(root.to_path_buf());
     let name = office.agent("zolly");
     let herdr = crate::herdr::HerdrClient::new(root.to_path_buf());
-    let agents = match herdr.agent_list() {
+    let mut agents = match herdr.agent_list() {
         Ok(agents) => agents,
         Err(error) => return Some(format!("manager not woken: {error}")),
     };
+    if !agents.iter().any(|agent| agent.name.as_deref() == Some(name.as_str())) {
+        // A just-seated manager is an unnamed omp in the `zolly@<freq>` tab;
+        // §0 has not run yet. Register it here so the timer can reach it.
+        match office_manager_pane(&herdr, &office) {
+            Ok(Some(pane)) => {
+                if let Err(error) = herdr.agent_rename(&pane, &name) {
+                    return Some(format!("manager not woken: {error}"));
+                }
+                agents = herdr.agent_list().unwrap_or_default();
+            }
+            Ok(None) => return Some("manager not running".into()),
+            Err(error) => return Some(format!("manager not woken: {error}")),
+        }
+    }
     let Some(agent) = agents.iter().find(|agent| agent.name.as_deref() == Some(name.as_str())) else {
         return Some("manager not running".into());
     };
@@ -233,6 +266,28 @@ fn wake_manager(root: &Path, note: &Path) -> Option<String> {
         Ok(()) => Some(format!("woke {name}")),
         Err(error) => Some(format!("manager not woken: {error}")),
     }
+}
+
+/// The unnamed omp pane in the manager's tab, if it exists.
+fn office_manager_pane(
+    herdr: &crate::herdr::HerdrClient,
+    office: &crate::office::Office,
+) -> anyhow::Result<Option<String>> {
+    let tab_label = format!("zolly@{}", office.frequency);
+    let Some(tab) = herdr
+        .tab_list()?
+        .into_iter()
+        .find(|tab| tab.label == tab_label)
+    else {
+        return Ok(None);
+    };
+    Ok(herdr
+        .pane_list()?
+        .into_iter()
+        .find(|pane| {
+            pane.tab_id.as_deref() == Some(tab.tab_id.as_str()) && pane.agent.is_some()
+        })
+        .map(|pane| pane.pane_id))
 }
 
 fn recent_focus(root: &Path, focus: &str, now: u64) -> bool {

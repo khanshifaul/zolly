@@ -41,13 +41,24 @@ const WATCH_INTERVAL_SECS: u64 = 60;
 // Approval loop (queue-backed)
 // ---------------------------------------------------------------------------
 
-/// Tasks currently gated on the founder: `gate: human`, not approved,
-/// not escalated, not settled.
+/// Tasks currently gated on the founder, read from the canonical result
+/// file: the branch copy when a worktree exists, otherwise the main copy.
+/// The queue file is a brief, not a gate store.
 fn pending_gates(root: &Path) -> Result<Vec<(std::path::PathBuf, String)>> {
-    Ok(queue::read_queue(root)?
-        .into_iter()
-        .filter(|(_, c)| queue::is_pending_gate(&queue::parse_frontmatter(c)))
-        .collect())
+    let mut out = Vec::new();
+    for path in queue::result_files(root) {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        // Settled status does not clear a gate. Use the merge-aware
+        // unresolved predicate with merged=false: the approve path is, by
+        // definition, for work that is not merged.
+        if queue::is_unresolved_gate(&content)
+            && !queue::parse_frontmatter(&content).escalated
+        {
+            out.push((path, content));
+        }
+    }
+    Ok(out)
 }
 
 pub fn handle_status(root: &Path) -> Result<String> {
@@ -64,13 +75,23 @@ pub fn handle_status(root: &Path) -> Result<String> {
 }
 
 /// `haa` / `ha` / `yes` writes `approved: yes` into every unsettled
-/// `gate: human` task. Never dispatches, commits, or pushes.
+/// `gate: human` result. The branch copy is canonical, so the write is
+/// committed on the task branch; it never dispatches, pushes, or merges.
 pub fn handle_approve(root: &Path) -> Result<String> {
     let mut approved = Vec::new();
     for (path, content) in pending_gates(root)? {
-        let new_content = content.replace("gate: human", "gate: human\napproved: yes");
-        fs::write(&path, new_content)
+        let old = content.clone();
+        let new_content = content.replacen("gate: human", "gate: human\napproved: yes", 1);
+        fs::write(&path, &new_content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
+        let id = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Err(error) = commit_marker(root, &path, &format!("approve: {id}")) {
+            let _ = fs::write(&path, old);
+            return Err(error);
+        }
         approved.push(queue::display_name(&path));
     }
 
@@ -81,17 +102,28 @@ pub fn handle_approve(root: &Path) -> Result<String> {
     }
 }
 
-/// `na` / `no` writes `status: escalated` plus a `reject:` reason. Neither
-/// ever dispatches, commits, or pushes.
+/// `na` / `no` writes `status: escalated` plus a `reject:` reason into the
+/// canonical result and commits it on the task branch. It never dispatches,
+/// pushes, or merges.
 pub fn handle_decline(root: &Path) -> Result<String> {
     let mut declined = Vec::new();
     for (path, content) in pending_gates(root)? {
-        let new_content = content.replace(
+        let old = content.clone();
+        let new_content = content.replacen(
             "gate: human",
             "gate: human\nstatus: escalated\nreject: declined by founder",
+            1,
         );
-        fs::write(&path, new_content)
+        fs::write(&path, &new_content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
+        let id = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Err(error) = commit_marker(root, &path, &format!("decline: {id}")) {
+            let _ = fs::write(&path, old);
+            return Err(error);
+        }
         declined.push(queue::display_name(&path));
     }
 
@@ -100,6 +132,46 @@ pub fn handle_decline(root: &Path) -> Result<String> {
     } else {
         Ok(format!("Declined: {}", declined.join(", ")))
     }
+}
+
+/// Commit a marker in the task's worktree. A main-checkout result has no
+/// branch to commit to; that copy is canonical only when no worktree exists.
+fn commit_marker(root: &Path, path: &Path, message: &str) -> Result<()> {
+    let id = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let worktree = root.join(".agents/worktrees").join(&id);
+    if !worktree.is_dir() || !path.starts_with(&worktree) {
+        return Ok(());
+    }
+    let relative = path
+        .strip_prefix(&worktree)
+        .context("result path is not inside the task worktree")?;
+    let add = std::process::Command::new("git")
+        .args(["add", "--"])
+        .arg(relative)
+        .current_dir(&worktree)
+        .output()
+        .context("Failed to stage the approval")?;
+    if !add.status.success() {
+        anyhow::bail!(
+            "failed to stage the approval: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        );
+    }
+    let commit = std::process::Command::new("git")
+        .args(["commit", "-m", message, "--no-verify"])
+        .current_dir(&worktree)
+        .output()
+        .context("Failed to commit the approval")?;
+    if !commit.status.success() {
+        anyhow::bail!(
+            "failed to commit the approval: {}",
+            String::from_utf8_lossy(&commit.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -467,4 +539,116 @@ pub async fn cmd_collab(
     send_message(&token, target_chat, &format!("{}\n\n{}", label, stdout.trim_end())).await?;
     println!("Collab {} sent to chat {}", if _view { "view URL" } else { "control link" }, target_chat);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git must run");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    /// A pending gate lives in the worktree branch copy. The queue file and
+    /// the main-checkout result both exist but are not authoritative. The
+    /// frontmatter deliberately has no `status:`: a settled status is not a
+    /// pending gate.
+    fn fixture() -> (PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "zolly-gate-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join(".agents/queue")).unwrap();
+        std::fs::create_dir_all(root.join(".agents/results")).unwrap();
+        std::fs::write(
+            root.join(".agents/queue/t-gate.md"),
+            "---\nid: t-gate\ngate: human\n---\n\nbrief\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".agents/results/t-gate.md"),
+            "---\nid: t-gate\ngate: human\n---\n\nmain copy — not authoritative\n",
+        )
+        .unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["add", ".agents/queue", ".agents/results"]);
+        git(&root, &["commit", "-q", "-m", "seed"]);
+
+        let worktree = root.join(".agents/worktrees/t-gate");
+        let worktree_str = worktree.to_string_lossy().into_owned();
+        git(&root, &["worktree", "add", "-q", &worktree_str, "-b", "foreman/t-gate"]);
+        std::fs::create_dir_all(worktree.join(".agents/results")).unwrap();
+        std::fs::write(
+            worktree.join(".agents/results/t-gate.md"),
+            "---\nid: t-gate\ngate: human\nstatus: done\n---\n\nbranch copy — authoritative\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".agents/results/t-done.md"),
+            "---\nid: t-done\nstatus: done\n---\n\nno gate at all\n",
+        )
+        .unwrap();
+        git(&worktree, &["add", ".agents/results/t-gate.md"]);
+        git(&worktree, &["commit", "-q", "-m", "result"]);
+        (root, worktree)
+    }
+
+    #[test]
+    fn approve_writes_and_commits_the_branch_copy() {
+        let (root, worktree) = fixture();
+        let branch_path = worktree.join(".agents/results/t-gate.md");
+        let main_path = root.join(".agents/results/t-gate.md");
+        let queue_path = root.join(".agents/queue/t-gate.md");
+        let main_before = std::fs::read_to_string(&main_path).unwrap();
+        let queue_before = std::fs::read_to_string(&queue_path).unwrap();
+
+        let before = handle_status(&root).unwrap();
+        assert!(before.contains("t-gate.md"), "{before}");
+        assert!(!before.contains("t-done"), "{before}");
+        handle_approve(&root).expect("approve must succeed");
+
+        let branch = std::fs::read_to_string(&branch_path).unwrap();
+        assert!(branch.contains("approved: yes"), "{branch}");
+        assert!(branch.contains("gate: human\napproved: yes"), "{branch}");
+        assert_eq!(
+            std::fs::read_to_string(&main_path).unwrap(),
+            main_before,
+            "the main copy must not be touched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&queue_path).unwrap(),
+            queue_before,
+            "the queue file is a brief, not the gate store"
+        );
+
+        let subject = git(&worktree, &["log", "-1", "--format=%s"]);
+        assert!(
+            String::from_utf8_lossy(&subject.stdout).contains("approve: t-gate"),
+            "the approval must be committed on the task branch"
+        );
+
+        let (waiting, historical) = crate::brief::result_gates(&root).unwrap();
+        assert!(waiting.is_empty(), "approved gate still waiting: {waiting:?}");
+        assert_eq!(historical, vec!["t-gate.md".to_string()]);
+        assert!(handle_status(&root).unwrap().contains("No tasks waiting"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

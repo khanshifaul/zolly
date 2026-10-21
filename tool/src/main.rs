@@ -572,8 +572,17 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     let foreman_label = format!("foreman@{}", office.frequency);
     let reviewer_label = format!("pr-reviewer@{}", office.frequency);
     let agents = herdr.agent_list().context("Failed to list agents")?;
-    let has_foreman = agents.iter().any(|a| a.name.as_deref() == Some(foreman.as_str()));
-    let has_reviewer = agents.iter().any(|a| a.name.as_deref() == Some(reviewer.as_str()));
+    let mut has_foreman = agents.iter().any(|a| a.name.as_deref() == Some(foreman.as_str()));
+    let mut has_reviewer = agents.iter().any(|a| a.name.as_deref() == Some(reviewer.as_str()));
+    // A seat can be live but unnamed: its omp is running in the right tab,
+    // herdr has no name for it, and the next `init` would start a duplicate.
+    // Adopt it by tab label before opening anything.
+    if !has_foreman && adopt_seat(herdr, &office, "foreman", &foreman_label) {
+        has_foreman = true;
+    }
+    if !has_reviewer && adopt_seat(herdr, &office, "pr-reviewer", &reviewer_label) {
+        has_reviewer = true;
+    }
 
     if has_foreman && has_reviewer {
         println!("Foreman and pr-reviewer already running");
@@ -656,6 +665,29 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
 /// shell, then start the agent with its boot prompt and persona as launch
 /// arguments. Passing them at launch (measured 3.0s per seat) beats starting
 /// omp empty and then prompting it (the turn-start wait cost ~6s more).
+/// Rename an already-running omp in the seat's tab to the expected agent name.
+/// True only when the rename succeeded.
+fn adopt_seat(herdr: &herdr::HerdrClient, office: &Office, handle: &str, label: &str) -> bool {
+    let Ok(tabs) = herdr.tab_list() else {
+        return false;
+    };
+    let Some(tab) = tabs.iter().find(|tab| tab.label == label) else {
+        return false;
+    };
+    let Ok(panes) = herdr.pane_list() else {
+        return false;
+    };
+    let Some(pane) = panes
+        .iter()
+        .find(|pane| pane.tab_id.as_deref() == Some(tab.tab_id.as_str()) && pane.agent.is_some())
+    else {
+        return false;
+    };
+    herdr
+        .agent_rename(&pane.pane_id, &office.agent(handle))
+        .is_ok()
+}
+
 fn open_seat(
     herdr: &herdr::HerdrClient,
     office: &Office,
@@ -965,9 +997,6 @@ fn replace_section(document: &str, name: &str, body: &str) -> String {
 }
 
 fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
-    let command = find_test_command(root).context(
-        "no test command — add `test-command: <cmd>` to .agents/rules/project.md",
-    )?;
     let worktree = root.join(".agents/worktrees").join(task_id);
     if !worktree.is_dir() {
         anyhow::bail!("no worktree at {}", worktree.display());
@@ -975,7 +1004,16 @@ fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
     if worktree.canonicalize().ok() == root.canonicalize().ok() {
         anyhow::bail!("refusing to verify on the main checkout");
     }
-    let result_path = root.join(".agents/results").join(format!("{task_id}.md"));
+    // The branch copy is authoritative (result-contract.md), so the result
+    // file lives in the worktree. The test command may live in either place:
+    // a worktree carries tracked files only, so a machine-local .agents/ is
+    // absent there and the main checkout is the fallback.
+    let command = find_test_command(&worktree)
+        .or_else(|| find_test_command(root))
+        .context(
+            "no test command — add `test-command: <cmd>` to .agents/rules/project.md",
+        )?;
+    let result_path = worktree.join(".agents/results").join(format!("{task_id}.md"));
     if !result_path.is_file() {
         anyhow::bail!(
             "no result file at {} — the worker writes it first",
@@ -2829,5 +2867,77 @@ mod telegram_poll_tests {
         let anonymous = false;
         let no_anonymous = false;
         assert_eq!(anonymous && !no_anonymous, false);
+    }
+}
+
+#[cfg(test)]
+mod verify_copy_tests {
+    use super::*;
+
+    fn fixture(name: &str, worktree_project: Option<&str>) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "zolly-verify-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join(".agents/rules")).unwrap();
+        std::fs::create_dir_all(root.join(".agents/results")).unwrap();
+        std::fs::write(
+            root.join(".agents/rules/project.md"),
+            "test-command: echo FROM_MAIN\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".agents/results/t-x.md"),
+            "## Verify\n\nmain copy — must not change\n",
+        )
+        .unwrap();
+        let worktree = root.join(".agents/worktrees/t-x");
+        std::fs::create_dir_all(worktree.join(".agents/results")).unwrap();
+        if let Some(command) = worktree_project {
+            std::fs::create_dir_all(worktree.join(".agents/rules")).unwrap();
+            std::fs::write(
+                worktree.join(".agents/rules/project.md"),
+                format!("test-command: {command}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            worktree.join(".agents/results/t-x.md"),
+            "## Verify\n\nbranch copy — worker wrote this\n",
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn verify_writes_the_branch_copy_and_leaves_main_untouched() {
+        let root = fixture("branch", Some("echo FROM_WORKTREE"));
+        let main_before = std::fs::read_to_string(root.join(".agents/results/t-x.md")).unwrap();
+        verify_cmd(&root, "t-x").expect("verify should pass");
+        let branch = std::fs::read_to_string(
+            root.join(".agents/worktrees/t-x/.agents/results/t-x.md"),
+        )
+        .unwrap();
+        let main_after = std::fs::read_to_string(root.join(".agents/results/t-x.md")).unwrap();
+        assert!(branch.contains("- command: `echo FROM_WORKTREE`"), "{branch}");
+        assert!(branch.contains("- exit: 0"), "{branch}");
+        assert_eq!(main_after, main_before, "main copy must be untouched");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn verify_falls_back_to_the_main_project_md() {
+        let root = fixture("fallback", None);
+        verify_cmd(&root, "t-x").expect("verify should pass");
+        let branch = std::fs::read_to_string(
+            root.join(".agents/worktrees/t-x/.agents/results/t-x.md"),
+        )
+        .unwrap();
+        assert!(branch.contains("- command: `echo FROM_MAIN`"), "{branch}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

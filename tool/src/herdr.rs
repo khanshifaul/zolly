@@ -10,6 +10,8 @@ pub struct HerdrAgent {
     pub pane_id: String,
     pub tab_id: Option<String>,
     pub agent_status: String,
+    #[serde(default)]
+    pub cwd: String,
     #[serde(rename = "agent_session")]
     pub agent_session: Option<AgentSession>,
 }
@@ -25,6 +27,22 @@ pub struct HerdrPane {
     pub pane_id: String,
     pub tab_id: Option<String>,
     pub agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HerdrTab {
+    pub tab_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrTabListResponse {
+    result: HerdrTabListResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrTabListResult {
+    tabs: Vec<HerdrTab>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,10 +76,12 @@ struct HerdrPaneListResult {
 }
 
 #[derive(Debug, Deserialize)]
-struct HerdrPaneInfo {
-    pane_id: String,
-    workspace_id: String,
-    cwd: String,
+pub struct HerdrPaneInfo {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub cwd: String,
+    pub tab_id: Option<String>,
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -518,6 +538,38 @@ impl HerdrClient {
         &self.root
     }
 
+    pub fn tab_list(&self) -> Result<Vec<HerdrTab>> {
+        let output = Command::new("herdr")
+            .args(["tab", "list"])
+            .output()
+            .context("Failed to run herdr tab list")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "herdr tab list failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let parsed: HerdrTabListResponse =
+            serde_json::from_slice(&output.stdout).context("Failed to parse herdr tab list")?;
+        Ok(parsed.result.tabs)
+    }
+
+    pub fn pane_list(&self) -> Result<Vec<HerdrPaneInfo>> {
+        let output = Command::new("herdr")
+            .args(["pane", "list"])
+            .output()
+            .context("Failed to run herdr pane list")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "herdr pane list failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let parsed: HerdrPaneListResponse =
+            serde_json::from_slice(&output.stdout).context("Failed to parse herdr pane list")?;
+        Ok(parsed.result.panes)
+    }
+
     pub fn agent_list(&self) -> Result<Vec<HerdrAgent>> {
         let output = Command::new("herdr")
             .args(["agent", "list"])
@@ -547,19 +599,24 @@ impl HerdrClient {
         Ok(())
     }
 
-    pub fn agent_start(&self, name: &str, kind: &str, pane_id: &str) -> Result<()> {
-        let output = Command::new("herdr")
-            .args([
-                "agent",
-                "start",
-                name,
-                "--kind",
-                kind,
-                "--pane",
-                pane_id,
-                "--timeout",
-                "30000",
-            ])
+    pub fn agent_start(&self, name: &str, kind: &str, pane_id: &str, launch_args: &[String]) -> Result<()> {
+        let mut command = Command::new("herdr");
+        command.args([
+            "agent",
+            "start",
+            name,
+            "--kind",
+            kind,
+            "--pane",
+            pane_id,
+            "--timeout",
+            "30000",
+        ]);
+        if !launch_args.is_empty() {
+            command.arg("--");
+            command.args(launch_args);
+        }
+        let output = command
             .output()
             .context("Failed to run herdr agent start")?;
 
@@ -619,6 +676,7 @@ impl HerdrClient {
         kind: &str,
         cwd: &str,
         workspace: Option<&str>,
+        launch_args: &[String],
         on_pane: F,
     ) -> Result<String>
     where
@@ -648,7 +706,7 @@ impl HerdrClient {
             // Still a shell: this is where the Radio join must happen.
             on_pane(&pane);
             last_pane = pane.clone();
-            match self.agent_start(name, kind, &pane) {
+            match self.agent_start(name, kind, &pane, launch_args) {
                 Ok(()) => return Ok(pane),
                 Err(e) if Self::start_retryable(&e) => {
                     // A timed-out start may have registered the agent anyway.
@@ -844,23 +902,6 @@ impl HerdrClient {
             } else {
                 idle_reads += 1;
             }
-        }
-        Ok(())
-    }
-
-    /// Submit a prompt and return when the turn has STARTED, without waiting
-    /// for it to settle. Seat boot uses this: the manager must not wait for a
-    /// seat's greeting, but delivery still has to be proven — a held paste is
-    /// why `agent_prompt_only` alone was not enough (measured 2026-10-14).
-    pub fn agent_prompt_started(&self, name: &str, prompt: &str, timeout_ms: u64) -> Result<()> {
-        self.agent_prompt_only(name, prompt)
-            .with_context(|| format!("Failed to prompt agent {}", name))?;
-        if !self.wait_turn_started(name, timeout_ms)? {
-            anyhow::bail!(
-                "Agent {} did not start processing the prompt within {}ms",
-                name,
-                timeout_ms
-            );
         }
         Ok(())
     }
@@ -1181,9 +1222,19 @@ impl HerdrClient {
             .filter(|p| p.workspace_id == workspace)
             .map(|p| p.pane_id.as_str())
             .collect();
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         Ok(agents
             .into_iter()
-            .filter(|a| panes.contains(a.pane_id.as_str()))
+            .filter(|a| {
+                // A worker lives in a worktree workspace, not the office
+                // workspace. Its cwd is still under the office root; use that
+                // as the second boundary so the pulse does not lose it.
+                let under_root = Path::new(&a.cwd)
+                    .canonicalize()
+                    .map(|cwd| cwd.starts_with(&root))
+                    .unwrap_or(false);
+                panes.contains(a.pane_id.as_str()) || under_root
+            })
             .collect())
     }
 

@@ -490,6 +490,18 @@ else
     find "$BACKUP/memory" -maxdepth 1 -type f -name '*.md' -exec cp {} "$AGENTS_DIR/memory/" \;
     [ -d "$BACKUP/memory/archive" ] && cp -R "$BACKUP/memory/archive/." "$AGENTS_DIR/memory/archive/"
     [ -f "$BACKUP/rules/project.md" ] && cp "$BACKUP/rules/project.md" "$AGENTS_DIR/rules/project.md"
+    # Per-seat omp memory (foreman, hr, zolly, ...) is office state the
+    # template does not ship. A force install that dropped it lost 30 files
+    # on 2026-10-21.
+    seat_memory=0
+    for seat_dir in "$BACKUP"/*/memory; do
+      [ -d "$seat_dir" ] || continue
+      seat=$(basename "$(dirname "$seat_dir")")
+      mkdir -p "$AGENTS_DIR/$seat/memory"
+      ( cd "$seat_dir" && tar -cf - . ) | ( cd "$AGENTS_DIR/$seat/memory" && tar -xf - )
+      seat_memory=1
+    done
+    [ "$seat_memory" -eq 0 ] || ok "restored per-seat memory"
     find "$BACKUP/hr" -maxdepth 1 -type f \( -name '*.md' -o -name '*.hired' \) -exec cp {} "$AGENTS_DIR/hr/" \; 2>/dev/null || true
     find "$BACKUP/worker" -maxdepth 1 -type f -name '*.md' ! -name 'generic.md' -exec cp {} "$AGENTS_DIR/worker/" \; 2>/dev/null || true
     # Work in flight, work finished and the day/event records are not template

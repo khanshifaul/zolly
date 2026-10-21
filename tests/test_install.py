@@ -133,6 +133,10 @@ class InstallTests(unittest.TestCase):
         repo = self.make_repo("app")
         self.assertEqual(self.install(repo).returncode, 0)
 
+        seat = repo / ".agents" / "foreman" / "memory" / "current.md"
+        seat.parent.mkdir(parents=True, exist_ok=True)
+        seat.write_text("foreman kept this\n", encoding="utf-8")
+
         added = subprocess.run(
             [str(repo / ".agents" / "shared" / "memory"), "add", "learning",
              "The office kept this entry across a reinstall."],
@@ -144,6 +148,10 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(forced.returncode, 0, forced.stderr)
         learnings = (repo / ".agents" / "memory" / "learnings.md").read_text(encoding="utf-8")
         self.assertIn("kept this entry across a reinstall", learnings)
+        self.assertEqual(
+            seat.read_text(encoding="utf-8"), "foreman kept this\n",
+            "a reinstall must not drop per-seat memory",
+        )
         self.assertTrue(list(repo.glob(".agents-backup-*")), "no backup directory was kept")
 
     def test_force_preserves_results_and_queue(self):

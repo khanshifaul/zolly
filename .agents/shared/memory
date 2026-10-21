@@ -168,6 +168,26 @@ next_n() {
 
 count_entries() { grep -cE '^## [DLC]-[0-9]{4} \|' "$1" 2>/dev/null || true; }
 
+# The byte budget is over the live files together, not per file.
+live_bytes() {
+  local total=0 f b
+  for f in "$DECISIONS" "$LEARNINGS" "$CURRENT"; do
+    [ -f "$f" ] || continue
+    b=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
+    total=$((total + ${b:-0}))
+  done
+  printf '%s\n' "$total"
+}
+
+live_entries() {
+  local total=0 f n
+  for f in "$DECISIONS" "$LEARNINGS" "$CURRENT"; do
+    [ -f "$f" ] || continue
+    n=$(count_entries "$f"); total=$((total + ${n:-0}))
+  done
+  printf '%s\n' "$total"
+}
+
 # Create a live file with its preamble on first use.
 ensure_file() {
   local f="$1" kind="$2" bound="$3" base desc
@@ -295,6 +315,16 @@ cmd_add() {
     }
   ' "$f" >"$new" 2>/dev/null
 
+  local live old_size new_size projected
+  live=$(live_bytes)
+  old_size=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
+  new_size=$(wc -c <"$new" 2>/dev/null | tr -d ' ')
+  projected=$((live - ${old_size:-0} + ${new_size:-0}))
+  if [ "$projected" -gt "$BUDGET_BYTES" ]; then
+    rm -f "$new"
+    die "REFUSING WRITE — live files would total ${projected}B, budget is ${BUDGET_BYTES}B. Shorten the entry, or remove an older entry first." 3
+  fi
+
   atomic_write "$new" "$f" || die "atomic write failed — live file is unchanged"
   info "wrote $id to $(basename "$f")"
   enforce_bound "$kind"
@@ -312,6 +342,9 @@ enforce_bound() {
   local kind="$1" f bound base n keep
   f="$(file_for_kind "$kind")"
   bound="$(bound_for_kind "$kind")"
+  if [ -n "${ENFORCE_KEEP:-}" ]; then
+    bound="$ENFORCE_KEEP"
+  fi
   base="$(base_for_kind "$kind")"
   n=$(count_entries "$f"); n="${n:-0}"
   [ "$n" -gt "$bound" ] || return 0
@@ -499,25 +532,50 @@ cmd_read() {
 
 # ── archive (explicit) ────────────────────────────────────────────────────────
 cmd_archive() {
-  local kind rc=0
+  local kind rc=0 before_bytes after_bytes before_entries after_entries guard=0
+  local pick pick_n n
+  before_bytes=$(live_bytes)
+  before_entries=$(live_entries)
   for kind in decision learning current; do
     enforce_bound "$kind" || rc=1
   done
-  [ "$rc" -eq 0 ] && info "archive: nothing to do — all live files are within bound"
+
+  # The entry-count bound is not the byte bound. If the files are still over
+  # budget, roll the oldest entry from the largest live file until they fit.
+  while [ "$(live_bytes)" -gt "$BUDGET_BYTES" ] && [ "$guard" -lt 200 ]; do
+    pick=""; pick_n=0
+    for kind in decision learning current; do
+      local f
+      f="$(file_for_kind "$kind")"
+      [ -f "$f" ] || continue
+      n=$(count_entries "$f"); n="${n:-0}"
+      if [ "$n" -gt "$pick_n" ]; then pick="$kind"; pick_n="$n"; fi
+    done
+    [ -n "$pick" ] && [ "$pick_n" -gt 1 ] || break
+    ENFORCE_KEEP=$((pick_n - 1)) enforce_bound "$pick" || { rc=1; break; }
+    guard=$((guard + 1))
+  done
+
+  after_bytes=$(live_bytes)
+  after_entries=$(live_entries)
+  if [ "$after_bytes" -gt "$BUDGET_BYTES" ]; then
+    echo "memory: archive: live files still total ${after_bytes}B; the last entries are too large to roll — remove or shorten one." >&2
+    rc=1
+  elif [ "$after_bytes" -lt "$before_bytes" ] || [ "$after_entries" -lt "$before_entries" ]; then
+    info "archive complete — live size ${after_bytes}B / ${BUDGET_BYTES}B budget"
+  elif [ "$rc" -eq 0 ]; then
+    info "archive: nothing to do — all live files are within bound"
+  fi
   return $rc
 }
 
 # ── check ─────────────────────────────────────────────────────────────────────
 cmd_check() {
-  local rc=0 bytes=0 b f scanrc
-  for f in "$DECISIONS" "$LEARNINGS" "$CURRENT"; do
-    [ -f "$f" ] || continue
-    b=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
-    bytes=$((bytes + b))
-  done
+  local rc=0 bytes f scanrc
+  bytes=$(live_bytes)
   if [ "$bytes" -gt "$BUDGET_BYTES" ]; then
     echo "memory: BOUND EXCEEDED — live files total ${bytes}B, budget is ${BUDGET_BYTES}B." >&2
-    echo "        Run 'memory archive'. A one-shot read has to stay cheap. spec §5" >&2
+    echo "        Run 'memory archive' to roll the oldest entries; if it still exceeds the budget, remove or shorten one." >&2
     rc=3
   else
     info "live size ${bytes}B / ${BUDGET_BYTES}B budget — OK"

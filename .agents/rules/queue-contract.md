@@ -31,6 +31,11 @@ What must be true when this is done, in one or two sentences.
 
 What the worker needs that is not obvious from the tree: the defect, the file,
 the command that reproduces it, the decision behind it.
+
+A brief is not private: it is the instruction that produces a result file that
+may be published. Do not put personal facts in the context — health, family,
+home, contacts, credentials — and do not instruct a worker to write one, even
+as an example of what to avoid. Name the decision and the paths, and stop.
 ```
 
 ## Status vocabulary
