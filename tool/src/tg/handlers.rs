@@ -49,7 +49,12 @@ fn pending_gates(root: &Path) -> Result<Vec<(std::path::PathBuf, String)>> {
     for path in queue::result_files(root) {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        if queue::is_pending_gate(&queue::parse_frontmatter(&content)) {
+        // Settled status does not clear a gate. Use the merge-aware
+        // unresolved predicate with merged=false: the approve path is, by
+        // definition, for work that is not merged.
+        if queue::is_unresolved_gate(&content)
+            && !queue::parse_frontmatter(&content).escalated
+        {
             out.push((path, content));
         }
     }
@@ -592,7 +597,12 @@ mod tests {
         std::fs::create_dir_all(worktree.join(".agents/results")).unwrap();
         std::fs::write(
             worktree.join(".agents/results/t-gate.md"),
-            "---\nid: t-gate\ngate: human\n---\n\nbranch copy — authoritative\n",
+            "---\nid: t-gate\ngate: human\nstatus: done\n---\n\nbranch copy — authoritative\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".agents/results/t-done.md"),
+            "---\nid: t-done\nstatus: done\n---\n\nno gate at all\n",
         )
         .unwrap();
         git(&worktree, &["add", ".agents/results/t-gate.md"]);
@@ -609,6 +619,9 @@ mod tests {
         let main_before = std::fs::read_to_string(&main_path).unwrap();
         let queue_before = std::fs::read_to_string(&queue_path).unwrap();
 
+        let before = handle_status(&root).unwrap();
+        assert!(before.contains("t-gate.md"), "{before}");
+        assert!(!before.contains("t-done"), "{before}");
         handle_approve(&root).expect("approve must succeed");
 
         let branch = std::fs::read_to_string(&branch_path).unwrap();
