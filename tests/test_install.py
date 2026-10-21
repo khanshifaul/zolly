@@ -414,6 +414,10 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(timer.is_file())
         self.assertIn("OnUnitActiveSec=30min", timer.read_text(encoding="utf-8"))
+        service = (
+            self.home / ".config/systemd/user/zolly-ponder@app.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ponder --wake", service)
 
         repo2 = self.make_repo("other")
         result = subprocess.run(

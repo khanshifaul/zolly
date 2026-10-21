@@ -1224,7 +1224,7 @@ After=default.target
 [Service]
 Type=oneshot
 WorkingDirectory=$TARGET
-ExecStart=$BIN_DEST ponder
+ExecStart=$BIN_DEST ponder --wake
 Nice=10
 EOF
   cat > "$PONDER_TIMER" <<EOF

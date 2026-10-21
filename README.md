@@ -344,15 +344,16 @@ reads the newest note and runs `prompts/curiosity.md`; at most three questions
 reach the founder.
 
 The installer writes a 30-minute systemd user timer for this (disable with
-`--no-ponder`):
+`--no-ponder`). It writes a focus note and, with `--wake`, prompts the manager
+if it is idle:
 
 ```sh
 systemctl --user enable --now zolly-ponder@<frequency>.timer
 ```
 
-For a foreground loop instead: `zolly ponder --loop --interval 1800`. The
-note-only design is deliberate: the timer can rank, but it cannot ask, act, or
-spend.
+For a foreground loop instead: `zolly ponder --loop --wake --interval 1800`.
+The timer can rank and wake the manager; it cannot ask the founder, act, or
+spend. The manager verifies the candidates and remains the only voice.
 
 </details>
 

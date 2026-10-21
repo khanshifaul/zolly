@@ -48,6 +48,9 @@ enum Commands {
         /// Ignore the idle gate and the two-hour dedupe.
         #[arg(long)]
         force: bool,
+        /// Wake the manager with the note when it is idle.
+        #[arg(long)]
+        wake: bool,
         /// Keep writing at --interval seconds. For a systemd unit or a pane.
         #[arg(long = "loop")]
         loop_: bool,
@@ -228,16 +231,17 @@ async fn main() -> Result<()> {
         Commands::Ponder {
             json,
             force,
+            wake,
             loop_,
             interval,
         } => {
             if loop_ {
                 loop {
-                    ponder_cmd(&root, json, force)?;
+                    ponder_cmd(&root, json, force, wake)?;
                     std::thread::sleep(std::time::Duration::from_secs(interval.max(60)));
                 }
             }
-            ponder_cmd(&root, json, force)
+            ponder_cmd(&root, json, force, wake)
         }
         Commands::Route { text, json } => route_cmd(&text, json),
         Commands::Bus {
@@ -748,8 +752,8 @@ fn curious_cmd(root: &std::path::Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn ponder_cmd(root: &std::path::Path, json: bool, force: bool) -> Result<()> {
-    let ponder = ponder::run(root, force)?;
+fn ponder_cmd(root: &std::path::Path, json: bool, force: bool, wake: bool) -> Result<()> {
+    let ponder = ponder::run(root, force, wake)?;
     if json {
         println!(
             "{}",

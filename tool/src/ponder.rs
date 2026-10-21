@@ -22,6 +22,8 @@ pub struct Ponder {
     /// None when the office is busy or the same focus was written recently.
     pub written: Option<String>,
     pub skipped: Option<String>,
+    /// Manager woken for the note, or why not.
+    pub waked: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +33,7 @@ struct Focus {
     reasons: Vec<String>,
 }
 
-pub fn run(root: &Path, force: bool) -> Result<Ponder> {
+pub fn run(root: &Path, force: bool, wake: bool) -> Result<Ponder> {
     let signals = curious::inspect(root)?;
     let brief = crate::brief::generate_brief(root).context("Failed to read the brief")?;
     let busy = signals.queue_pending > 0
@@ -50,6 +52,7 @@ pub fn run(root: &Path, force: bool) -> Result<Ponder> {
             signals,
             written: None,
             skipped: Some("office is not idle".into()),
+            waked: None,
         });
     }
 
@@ -62,6 +65,7 @@ pub fn run(root: &Path, force: bool) -> Result<Ponder> {
             signals,
             written: None,
             skipped: Some("same focus written in the last 2h".into()),
+            waked: None,
         });
     }
 
@@ -87,21 +91,31 @@ pub fn run(root: &Path, force: bool) -> Result<Ponder> {
         curious::render(&signals),
     );
     std::fs::write(&path, body).context("Failed to write the ponder note")?;
+    let waked = if wake {
+        wake_manager(root, &path)
+    } else {
+        None
+    };
     Ok(Ponder {
         focus: focus.name.into(),
         reasons: focus.reasons,
         signals,
         written: Some(path.display().to_string()),
         skipped: None,
+        waked,
     })
 }
 
 pub fn render(ponder: &Ponder) -> String {
-    match (&ponder.written, &ponder.skipped) {
+    let mut out = match (&ponder.written, &ponder.skipped) {
         (Some(path), _) => format!("ponder: {} — wrote {path}\n", ponder.focus),
         (None, Some(reason)) => format!("ponder: skipped ({reason})\n"),
         (None, None) => "ponder: no note\n".to_string(),
+    };
+    if let Some(waked) = &ponder.waked {
+        out.push_str(&format!("  {waked}\n"));
     }
+    out
 }
 
 fn pick_focus(signals: &Curiosity, tick: u64) -> Focus {
@@ -189,6 +203,36 @@ fn pick_focus(signals: &Curiosity, tick: u64) -> Focus {
         }
     }
     tied[(tick as usize) % tied.len()].clone()
+}
+
+/// Wake the manager with the note. Only the manager decides whether anything
+/// reaches the founder; this call just puts the note in front of it. A missing
+/// or busy manager is reported, never an error: the note remains for the next
+/// turn.
+fn wake_manager(root: &Path, note: &Path) -> Option<String> {
+    let office = crate::office::Office::load(root.to_path_buf());
+    let name = office.agent("zolly");
+    let herdr = crate::herdr::HerdrClient::new(root.to_path_buf());
+    let agents = match herdr.agent_list() {
+        Ok(agents) => agents,
+        Err(error) => return Some(format!("manager not woken: {error}")),
+    };
+    let Some(agent) = agents.iter().find(|agent| agent.name.as_deref() == Some(name.as_str())) else {
+        return Some("manager not running".into());
+    };
+    if agent.agent_status == "working" {
+        return Some("manager already working".into());
+    }
+    let prompt = format!(
+        "Idle attention. Read {}. Run .agents/prompts/curiosity.md against its focus. \
+         Find at most three candidate tasks or questions; research is pre-approved, \
+         building needs the normal approval. Report only what survives verification.",
+        note.display()
+    );
+    match herdr.agent_prompt_only(&name, &prompt) {
+        Ok(()) => Some(format!("woke {name}")),
+        Err(error) => Some(format!("manager not woken: {error}")),
+    }
 }
 
 fn recent_focus(root: &Path, focus: &str, now: u64) -> bool {
