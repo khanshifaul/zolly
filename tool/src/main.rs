@@ -997,9 +997,6 @@ fn replace_section(document: &str, name: &str, body: &str) -> String {
 }
 
 fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
-    let command = find_test_command(root).context(
-        "no test command — add `test-command: <cmd>` to .agents/rules/project.md",
-    )?;
     let worktree = root.join(".agents/worktrees").join(task_id);
     if !worktree.is_dir() {
         anyhow::bail!("no worktree at {}", worktree.display());
@@ -1007,7 +1004,16 @@ fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
     if worktree.canonicalize().ok() == root.canonicalize().ok() {
         anyhow::bail!("refusing to verify on the main checkout");
     }
-    let result_path = root.join(".agents/results").join(format!("{task_id}.md"));
+    // The branch copy is authoritative (result-contract.md), so the result
+    // file lives in the worktree. The test command may live in either place:
+    // a worktree carries tracked files only, so a machine-local .agents/ is
+    // absent there and the main checkout is the fallback.
+    let command = find_test_command(&worktree)
+        .or_else(|| find_test_command(root))
+        .context(
+            "no test command — add `test-command: <cmd>` to .agents/rules/project.md",
+        )?;
+    let result_path = worktree.join(".agents/results").join(format!("{task_id}.md"));
     if !result_path.is_file() {
         anyhow::bail!(
             "no result file at {} — the worker writes it first",
@@ -2861,5 +2867,77 @@ mod telegram_poll_tests {
         let anonymous = false;
         let no_anonymous = false;
         assert_eq!(anonymous && !no_anonymous, false);
+    }
+}
+
+#[cfg(test)]
+mod verify_copy_tests {
+    use super::*;
+
+    fn fixture(name: &str, worktree_project: Option<&str>) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "zolly-verify-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join(".agents/rules")).unwrap();
+        std::fs::create_dir_all(root.join(".agents/results")).unwrap();
+        std::fs::write(
+            root.join(".agents/rules/project.md"),
+            "test-command: echo FROM_MAIN\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".agents/results/t-x.md"),
+            "## Verify\n\nmain copy — must not change\n",
+        )
+        .unwrap();
+        let worktree = root.join(".agents/worktrees/t-x");
+        std::fs::create_dir_all(worktree.join(".agents/results")).unwrap();
+        if let Some(command) = worktree_project {
+            std::fs::create_dir_all(worktree.join(".agents/rules")).unwrap();
+            std::fs::write(
+                worktree.join(".agents/rules/project.md"),
+                format!("test-command: {command}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            worktree.join(".agents/results/t-x.md"),
+            "## Verify\n\nbranch copy — worker wrote this\n",
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn verify_writes_the_branch_copy_and_leaves_main_untouched() {
+        let root = fixture("branch", Some("echo FROM_WORKTREE"));
+        let main_before = std::fs::read_to_string(root.join(".agents/results/t-x.md")).unwrap();
+        verify_cmd(&root, "t-x").expect("verify should pass");
+        let branch = std::fs::read_to_string(
+            root.join(".agents/worktrees/t-x/.agents/results/t-x.md"),
+        )
+        .unwrap();
+        let main_after = std::fs::read_to_string(root.join(".agents/results/t-x.md")).unwrap();
+        assert!(branch.contains("- command: `echo FROM_WORKTREE`"), "{branch}");
+        assert!(branch.contains("- exit: 0"), "{branch}");
+        assert_eq!(main_after, main_before, "main copy must be untouched");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn verify_falls_back_to_the_main_project_md() {
+        let root = fixture("fallback", None);
+        verify_cmd(&root, "t-x").expect("verify should pass");
+        let branch = std::fs::read_to_string(
+            root.join(".agents/worktrees/t-x/.agents/results/t-x.md"),
+        )
+        .unwrap();
+        assert!(branch.contains("- command: `echo FROM_MAIN`"), "{branch}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
