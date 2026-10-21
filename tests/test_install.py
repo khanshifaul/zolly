@@ -282,10 +282,12 @@ class InstallTests(unittest.TestCase):
     def test_webhook_mode_wires_url_and_secret(self):
         repo = self.make_repo("app")
         env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        bind = f"127.0.0.1:{self.free_port()}"
         result = subprocess.run(
             [
                 str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test",
                 "--webhook-url", "https://office.example.com/tg",
+                "--webhook-bind", bind,
             ],
             env=env, capture_output=True, text=True, timeout=60,
             start_new_session=True,
@@ -303,7 +305,7 @@ class InstallTests(unittest.TestCase):
         unit = (self.home / ".config" / "systemd" / "user" / "zolly@app.service").read_text(
             encoding="utf-8"
         )
-        self.assertIn("telegram-serve --webhook --bind 127.0.0.1:8080", unit)
+        self.assertIn(f"telegram-serve --webhook --bind {bind}", unit)
         self.assertIn(
             "telegram-set-webhook --url https://office.example.com/tg", result.stdout
         )
@@ -318,6 +320,7 @@ class InstallTests(unittest.TestCase):
             [
                 str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test",
                 "--force", "--webhook-url", "https://office.example.com/tg",
+                "--webhook-bind", bind,
             ],
             env=env, capture_output=True, text=True, timeout=60,
             start_new_session=True,
@@ -332,6 +335,31 @@ class InstallTests(unittest.TestCase):
             if line.startswith("ZOLLY_TELEGRAM_WEBHOOK_SECRET=")
         ][0]
         self.assertEqual(secret_again, secret)
+
+    def test_busy_webhook_bind_is_refused(self):
+        import socket
+
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        bind = f"127.0.0.1:{sock.getsockname()[1]}"
+        try:
+            result = subprocess.run(
+                [
+                    str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes",
+                    "--founder", "Test",
+                    "--webhook-url", "https://office.example.com/tg",
+                    "--webhook-bind", bind,
+                ],
+                env=env, capture_output=True, text=True, timeout=60,
+                start_new_session=True,
+            )
+        finally:
+            sock.close()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already in use", result.stderr)
 
     def test_webhook_url_must_be_https(self):
         repo = self.make_repo("app")
@@ -551,6 +579,15 @@ class InstallTests(unittest.TestCase):
         self.assertTrue((self.home / ".local" / "bin" / "zolly-mcp").is_file())
         self.assertFalse((self.home / ".config" / "zolly" / "app" / "credentials").exists())
         self.assertIn("skip Telegram (declined)", result.stdout)
+
+    def free_port(self):
+        import socket
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
 
     def run_in_pty(self, argv, answers, timeout=60):
         """Run argv on a pty so /dev/tty is a terminal; feed it `answers`."""

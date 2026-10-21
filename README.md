@@ -225,7 +225,9 @@ polling. Pass `--webhook-url https://<host>/<path>` (or
 `ZOLLY_TELEGRAM_WEBHOOK_SECRET` in the credentials, and prints the cutover.
 Point the TLS proxy at that bind, then run
 `zolly telegram-set-webhook --url <url> --secret "$ZOLLY_TELEGRAM_WEBHOOK_SECRET"`.
-`--webhook-bind` changes the local address; `zolly telegram-delete-webhook`
+`--webhook-bind` changes the local address; it must be free. The installer
+refuses a busy bind (port 8080 is commonly taken by llama.cpp) instead of
+writing a unit that cannot start. `zolly telegram-delete-webhook`
 returns to polling. A re-run reuses the URL Telegram already has instead of
 asking, so it cannot silently downgrade to long-polling.
 

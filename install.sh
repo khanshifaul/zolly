@@ -915,6 +915,27 @@ validate_webhook_secret() {
   [ "${#1}" -le 256 ] || die "webhook secret is longer than 256 characters"
 }
 
+# bind_taken <host:port> — true when a listener already owns the port and it
+# is not this office's own running webhook service (a --force re-run restarts
+# that one, so it is not a conflict).
+bind_taken() {
+  webhook_bind="$1"
+  webhook_port="${webhook_bind##*:}"
+  if command -v ss >/dev/null 2>&1; then
+    [ -n "$(ss -ltnH "sport = :$webhook_port" 2>/dev/null)" ] || return 1
+  else
+    (exec 3<>"/dev/tcp/${webhook_bind%:*}/$webhook_port") 2>/dev/null || return 1
+    exec 3>&-
+  fi
+  webhook_unit="$SERVICE_DIR/zolly@$FREQ.service"
+  if [ -f "$webhook_unit" ] &&
+     grep -q -- "--bind $webhook_bind" "$webhook_unit" 2>/dev/null &&
+     systemctl --user is-active --quiet "zolly@$FREQ.service" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
 TOKEN="${ZOLLY_TELEGRAM_TOKEN:-}"
 IDS="${ZOLLY_ALLOWED_IDS:-}"
 USERNAME="${ZOLLY_FOUNDER_USERNAME:-}"
@@ -1008,6 +1029,9 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
     fi
     if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -z "$WEBHOOK_URL" ] && can_ask; then
       note "webhook: a public HTTPS URL that forwards to http://$WEBHOOK_BIND"
+      if bind_taken "$WEBHOOK_BIND"; then
+        warn "$WEBHOOK_BIND is already in use — webhook mode needs --webhook-bind 127.0.0.1:<free port>"
+      fi
       note "no domain? blank = long-poll; or expose a tunnel (cloudflared, ngrok)"
       tries=0
       while [ "$tries" -lt 3 ]; do
@@ -1025,6 +1049,9 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
     fi
     if [ -n "$WEBHOOK_URL" ]; then
       validate_webhook_url "$WEBHOOK_URL"
+      if bind_taken "$WEBHOOK_BIND"; then
+        die "webhook bind $WEBHOOK_BIND is already in use (llama-server?) — use --webhook-bind 127.0.0.1:<free port>, or leave the URL blank for long-poll"
+      fi
       [ -n "$WEBHOOK_SECRET" ] || WEBHOOK_SECRET=$(gen_webhook_secret)
       validate_webhook_secret "$WEBHOOK_SECRET"
       WEBHOOK_STATE="webhook"
