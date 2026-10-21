@@ -115,6 +115,8 @@ ASSUME_YES=0
 BIN_STATE="skipped"
 MCP_STATE="skipped"
 SD_STATE="skipped"
+SD_ACTIVE=0
+UNIT_WRITTEN=0
 FORCE=0
 DRY_RUN=0
 
@@ -1195,8 +1197,10 @@ EOF
   # Writing is not starting. The follow-up lives in Next steps so the whole
   # install finishes before the founder is handed commands; a re-run on an
   # already-running listener does not repeat them.
+  UNIT_WRITTEN=1
   if systemctl --user is-active --quiet "zolly@$FREQ.service" 2>/dev/null; then
     SD_STATE="active"
+    SD_ACTIVE=1
   else
     SD_STATE="written"
   fi
@@ -1231,9 +1235,13 @@ else
 fi
 say ""
 heading "Next steps:"
-if [ "$SD_STATE" = "written" ]; then
+if [ "$UNIT_WRITTEN" -eq 1 ]; then
   note "systemctl --user daemon-reload"
-  note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
+  if [ "$SD_ACTIVE" -eq 1 ]; then
+    note "systemctl --user restart zolly@$FREQ.service   # apply the rewritten unit"
+  else
+    note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
+  fi
 fi
 if [ "$WEBHOOK_STATE" = "webhook" ]; then
   note "webhook: $WEBHOOK_URL → http://$WEBHOOK_BIND"

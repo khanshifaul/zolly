@@ -363,6 +363,38 @@ class InstallTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("is busy", result.stderr)
 
+    def test_active_listener_still_gets_restart_instructions(self):
+        repo = self.make_repo("app")
+        bind = f"127.0.0.1:{self.free_port()}"
+        fake_bin = self.home / "fakebin"
+        fake_bin.mkdir()
+        systemctl = fake_bin / "systemctl"
+        systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        systemctl.chmod(0o755)
+        env = dict(
+            self.env,
+            ZOLLY_TELEGRAM_TOKEN="dummy",
+            ZOLLY_ALLOWED_IDS="1",
+            PATH=f"{fake_bin}:{os.environ['PATH']}",
+        )
+        result = subprocess.run(
+            [
+                str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test",
+                "--webhook-url", "https://office.example.com/tg",
+                "--webhook-bind", bind,
+            ],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("systemctl --user daemon-reload", result.stdout)
+        self.assertIn("systemctl --user restart zolly@app.service", result.stdout)
+        # The listener must be in webhook mode before Telegram starts posting.
+        self.assertLess(
+            result.stdout.index("restart zolly@app.service"),
+            result.stdout.index("telegram-set-webhook --url"),
+        )
+
     def test_busy_default_bind_moves_to_a_free_port(self):
         import socket
 
