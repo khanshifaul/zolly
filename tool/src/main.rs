@@ -524,36 +524,60 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
         .context("Failed to resolve the office workspace")?;
     println!("Workspace: {}", workspace);
 
-    let mut failures: Vec<String> = Vec::new();
+    if !has_foreman || !has_reviewer {
+        println!("Opening seats...");
+    }
 
+    let (foreman_result, reviewer_result) = std::thread::scope(|scope| {
+        let foreman_job = if has_foreman {
+            None
+        } else {
+            Some(scope.spawn(|| {
+                open_seat(
+                    herdr,
+                    &office,
+                    "foreman",
+                    &foreman,
+                    &foreman_label,
+                    "foreman",
+                    &workspace,
+                )
+            }))
+        };
+        let reviewer_job = if has_reviewer {
+            None
+        } else {
+            Some(scope.spawn(|| {
+                open_seat(
+                    herdr,
+                    &office,
+                    "pr-reviewer",
+                    &reviewer,
+                    &reviewer_label,
+                    "reviewer",
+                    &workspace,
+                )
+            }))
+        };
+        let join = |job: Option<std::thread::ScopedJoinHandle<'_, Result<()>>>| match job {
+            Some(handle) => handle
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("seat thread panicked"))),
+            None => Ok(()),
+        };
+        (join(foreman_job), join(reviewer_job))
+    });
+
+    let mut failures: Vec<String> = Vec::new();
     if !has_foreman {
-        println!("Opening foreman tab...");
-        match open_seat(
-            herdr,
-            &office,
-            "foreman",
-            &foreman,
-            &foreman_label,
-            "foreman",
-            &workspace,
-        ) {
-            Ok(()) => println!("Foreman ready"),
+        match foreman_result {
+            Ok(()) => println!("Foreman started"),
             Err(e) => failures.push(format!("foreman: {e}")),
         }
     }
-
     if !has_reviewer {
-        println!("Opening reviewer tab...");
-        match open_seat(
-            herdr,
-            &office,
-            "pr-reviewer",
-            &reviewer,
-            &reviewer_label,
-            "reviewer",
-            &workspace,
-        ) {
-            Ok(()) => println!("Reviewer ready"),
+        match reviewer_result {
+            Ok(()) => println!("Reviewer started"),
             Err(e) => failures.push(format!("pr-reviewer: {e}")),
         }
     }
@@ -588,7 +612,7 @@ fn open_seat(
     let prompt = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
     herdr
-        .agent_prompt_wait(name, &prompt, 30_000)
+        .agent_prompt_started(name, &prompt, 30_000)
         .with_context(|| format!("Failed to prompt {name}"))?;
     Ok(())
 }

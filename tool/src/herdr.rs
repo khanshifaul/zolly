@@ -848,6 +848,23 @@ impl HerdrClient {
         Ok(())
     }
 
+    /// Submit a prompt and return when the turn has STARTED, without waiting
+    /// for it to settle. Seat boot uses this: the manager must not wait for a
+    /// seat's greeting, but delivery still has to be proven — a held paste is
+    /// why `agent_prompt_only` alone was not enough (measured 2026-10-14).
+    pub fn agent_prompt_started(&self, name: &str, prompt: &str, timeout_ms: u64) -> Result<()> {
+        self.agent_prompt_only(name, prompt)
+            .with_context(|| format!("Failed to prompt agent {}", name))?;
+        if !self.wait_turn_started(name, timeout_ms)? {
+            anyhow::bail!(
+                "Agent {} did not start processing the prompt within {}ms",
+                name,
+                timeout_ms
+            );
+        }
+        Ok(())
+    }
+
     /// True when the agent's status bar shows an in-flight turn. See
     /// `is_working_status_bar` for the shape and the measurement behind it.
     ///
