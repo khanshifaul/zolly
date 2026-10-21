@@ -473,6 +473,11 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
         .bytes()
         .await
         .map_err(|e| RequestFailure::from_reqwest("voice file read failed", &e))?;
+    if audio.is_empty() {
+        anyhow::bail!(
+            "voice download returned no bytes (Telegram delivered an empty file or the connection dropped); send the note again"
+        );
+    }
 
     let tmp = unique_temp("ogg");
     std::fs::write(&tmp, &audio).context("failed to write temp voice file")?;
