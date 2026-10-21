@@ -262,6 +262,76 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(
             (self.home / ".config" / "systemd" / "user" / "zolly@app.service").is_file()
         )
+        unit = (self.home / ".config" / "systemd" / "user" / "zolly@app.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("telegram-serve\n", unit)
+        self.assertNotIn("--webhook", unit)
+
+    def test_webhook_mode_wires_url_and_secret(self):
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        result = subprocess.run(
+            [
+                str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test",
+                "--webhook-url", "https://office.example.com/tg",
+            ],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        creds = (
+            self.home / ".config" / "zolly" / "app" / "credentials"
+        ).read_text(encoding="utf-8")
+        secret = [
+            line.split("=", 1)[1]
+            for line in creds.splitlines()
+            if line.startswith("ZOLLY_TELEGRAM_WEBHOOK_SECRET=")
+        ][0]
+        self.assertTrue(secret, "a secret must be generated")
+        unit = (self.home / ".config" / "systemd" / "user" / "zolly@app.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("telegram-serve --webhook --bind 127.0.0.1:8080", unit)
+        self.assertIn(
+            "telegram-set-webhook --url https://office.example.com/tg", result.stdout
+        )
+        self.assertIn("point the TLS proxy", result.stdout)
+
+        # A re-run must keep the secret Telegram already has; rotating it here
+        # would silently break every delivery.
+        again = subprocess.run(
+            [
+                str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test",
+                "--force", "--webhook-url", "https://office.example.com/tg",
+            ],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(again.returncode, 0, again.stderr)
+        creds_again = (
+            self.home / ".config" / "zolly" / "app" / "credentials"
+        ).read_text(encoding="utf-8")
+        secret_again = [
+            line.split("=", 1)[1]
+            for line in creds_again.splitlines()
+            if line.startswith("ZOLLY_TELEGRAM_WEBHOOK_SECRET=")
+        ][0]
+        self.assertEqual(secret_again, secret)
+
+    def test_webhook_url_must_be_https(self):
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        result = subprocess.run(
+            [
+                str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test",
+                "--webhook-url", "http://office.example.com/tg",
+            ],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must start with https", result.stderr)
 
     def test_force_preserves_a_project_local_tool_source(self):
         repo = self.make_repo("app")
@@ -349,7 +419,7 @@ class InstallTests(unittest.TestCase):
         # MCP no, Telegram yes (the token makes the default yes), ids yes.
         code, text = self.run_in_pty(
             [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
-            b"n\ny\ny\n",
+            b"n\ny\ny\n\n",
         )
         self.assertEqual(code, 0, text)
         self.assertIn("[Y/n]", text)
@@ -472,7 +542,7 @@ class InstallTests(unittest.TestCase):
     def install_with_pasted_token(self, name, payload):
         repo = self.make_repo(name)
         # MCP no, Telegram yes, token payload, allowed ids.
-        answers = b"n\ny\n" + payload + b"1,2\n"
+        answers = b"n\ny\n" + payload + b"1,2\n\n"
         code, text = self.run_in_pty(
             [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
             answers,

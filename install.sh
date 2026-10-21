@@ -46,6 +46,11 @@
 #   ZOLLY_FOUNDER_USERNAME founder's @handle, without the @ (discovered from the
 #                          same getUpdates call; empty when they have none)
 #   ZOLLY_TELEGRAM_API     Bot API base (default https://api.telegram.org)
+#   ZOLLY_TELEGRAM_WEBHOOK_URL     public https URL Telegram delivers to;
+#                                  blank keeps long-polling
+#   ZOLLY_TELEGRAM_WEBHOOK_BIND    local bind for the webhook listener
+#                                  (default 127.0.0.1:8080, behind a TLS proxy)
+#   ZOLLY_TELEGRAM_WEBHOOK_SECRET  Telegram's secret_token; generated when absent
 #   ZOLLY_FOUNDER          founder name, non-interactive
 #   ZOLLY_KIT_URL          tarball of this kit (piped only; default: GitHub main)
 #   ZOLLY_REF              branch or tag to fetch when piped (default: main)
@@ -112,6 +117,10 @@ DRY_RUN=0
 BIN_DEST="${ZOLLY_BIN_DEST:-$HOME/.local/bin/zolly}"
 TG_API="${ZOLLY_TELEGRAM_API:-https://api.telegram.org}"
 TG_API=${TG_API%/}
+WEBHOOK_URL="${ZOLLY_TELEGRAM_WEBHOOK_URL:-}"
+WEBHOOK_BIND="${ZOLLY_TELEGRAM_WEBHOOK_BIND:-127.0.0.1:8080}"
+WEBHOOK_SECRET="${ZOLLY_TELEGRAM_WEBHOOK_SECRET:-}"
+WEBHOOK_STATE="poll"
 CRED_ROOT="$HOME/.config/zolly"
 SERVICE_DIR="$HOME/.config/systemd/user"
 
@@ -290,6 +299,9 @@ while [ $# -gt 0 ]; do
     --no-binary)    DO_BINARY=0; shift ;;
     --no-mcp)       DO_MCP=0; shift ;;
     --no-telegram)  DO_TELEGRAM=0; shift ;;
+    --webhook-url)  WEBHOOK_URL="${2:-}"; shift 2 ;;
+    --webhook-bind) WEBHOOK_BIND="${2:-}"; shift 2 ;;
+    --webhook-secret) WEBHOOK_SECRET="${2:-}"; shift 2 ;;
     --yes|-y)       ASSUME_YES=1; shift ;;
     --force)        FORCE=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
@@ -840,6 +852,40 @@ tg_username() {
     head -1
 }
 
+# tg_webhook_url <token> — the URL Telegram currently delivers to, or empty.
+tg_webhook_url() {
+  _tg_json=$(curl -fsS --connect-timeout 5 --max-time 10 \
+    "$TG_API/bot$1/getWebhookInfo" 2>/dev/null) || return 0
+  printf '%s' "$_tg_json" |
+    tr -d '\n' |
+    grep -oE '"url" *: *"[^"]*"' |
+    head -1 |
+    sed -e 's/^.*: *"//' -e 's/"$//'
+}
+
+gen_webhook_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+  else
+    LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48
+  fi
+}
+
+validate_webhook_url() {
+  case "$1" in
+    https://?*) ;;
+    *) die "webhook URL must start with https:// — Telegram only delivers over HTTPS: $1" ;;
+  esac
+}
+
+validate_webhook_secret() {
+  [ -n "$1" ] || die "webhook secret is empty"
+  case "$1" in
+    *[!A-Za-z0-9_-]*) die "webhook secret may only contain A-Z, a-z, 0-9, '_' and '-'" ;;
+  esac
+  [ "${#1}" -le 256 ] || die "webhook secret is longer than 256 characters"
+}
+
 TOKEN="${ZOLLY_TELEGRAM_TOKEN:-}"
 IDS="${ZOLLY_ALLOWED_IDS:-}"
 USERNAME="${ZOLLY_FOUNDER_USERNAME:-}"
@@ -860,7 +906,14 @@ if [ -z "$TOKEN" ] || [ -z "$IDS" ] || [ -z "$USERNAME" ]; then
       USERNAME=$(sed -n 's/^ZOLLY_FOUNDER_USERNAME=//p' "$CRED_FILE")
       USERNAME=${USERNAME#@}
     fi
+    [ -n "$WEBHOOK_SECRET" ] || WEBHOOK_SECRET=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_SECRET=//p' "$CRED_FILE")
   fi
+fi
+# The secret is independent of how token/ids arrived: when env supplies all
+# three, the block above is skipped, and rotating the secret here would break
+# an existing webhook registration.
+if [ -z "$WEBHOOK_SECRET" ] && [ -f "$CRED_FILE" ]; then
+  WEBHOOK_SECRET=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_SECRET=//p' "$CRED_FILE")
 fi
 
 WANT_TELEGRAM=0
@@ -909,8 +962,31 @@ fi
 
 if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
   if [ -n "$IDS" ]; then
+    # Webhook mode: an explicit URL/env, or the one Telegram already has. A
+    # registration found on the API is reused rather than asked about, so a
+    # re-run cannot silently downgrade the office back to long-polling.
+    if [ -z "$WEBHOOK_URL" ] && [ -n "$TOKEN" ] && [ -f "$CRED_FILE" ]; then
+      WEBHOOK_URL=$(tg_webhook_url "$TOKEN")
+      [ -z "$WEBHOOK_URL" ] || say "webhook already registered: $WEBHOOK_URL"
+    fi
+    if [ -z "$WEBHOOK_URL" ] && can_ask; then
+      WEBHOOK_URL=$(ask_text "Webhook URL (blank = long-poll):")
+    fi
+    if [ -n "$WEBHOOK_URL" ]; then
+      validate_webhook_url "$WEBHOOK_URL"
+      [ -n "$WEBHOOK_SECRET" ] || WEBHOOK_SECRET=$(gen_webhook_secret)
+      validate_webhook_secret "$WEBHOOK_SECRET"
+      WEBHOOK_STATE="webhook"
+      note "webhook: $WEBHOOK_URL → http://$WEBHOOK_BIND (TLS proxy required)"
+    else
+      WEBHOOK_STATE="poll"
+    fi
     HAVE_CREDS=1
-    TG_STATE="configured"
+    if [ "$WEBHOOK_STATE" = "webhook" ]; then
+      TG_STATE="webhook"
+    else
+      TG_STATE="configured"
+    fi
   else
     # Keep the token the founder just typed. The chat id arrives with the
     # first message, and a --force re-run discovers it; discarding a token
@@ -933,6 +1009,7 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
 ZOLLY_TELEGRAM_TOKEN=$TOKEN
 ZOLLY_ALLOWED_IDS=$IDS
 ZOLLY_FOUNDER_USERNAME=$USERNAME
+ZOLLY_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET
 EOF
       chmod 600 "$tmp"
       mv -f "$tmp" "$CRED_FILE"
@@ -973,6 +1050,11 @@ elif [ "$DRY_RUN" -eq 1 ]; then
   say "would write $UNIT_FILE"
 else
   mkdir -p "$SERVICE_DIR"
+  if [ "$WEBHOOK_STATE" = "webhook" ]; then
+    EXEC_START="$BIN_DEST telegram-serve --webhook --bind $WEBHOOK_BIND"
+  else
+    EXEC_START="$BIN_DEST telegram-serve"
+  fi
   cat > "$UNIT_FILE" <<EOF
 [Unit]
 Description=Zolly Telegram listener ($FREQ)
@@ -980,7 +1062,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$BIN_DEST telegram-serve
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=10
 EnvironmentFile=-$CRED_FILE
@@ -1017,7 +1099,7 @@ if [ "$COLOR" -eq 1 ]; then
   for _pair in "binary:$BIN_STATE" "MCP:$MCP_STATE" "Telegram:$TG_STATE" "systemd:$SD_STATE"; do
     _label=${_pair%%:*}; _value=${_pair#*:}
     case "$_value" in
-      installed|configured|written|active) _col=$C_OK ;;
+      installed|configured|written|active|webhook) _col=$C_OK ;;
       *) _col=$C_DIM ;;
     esac
     printf '  %s%s%s %s%s%s' "$C_DIM" "$_label" "$C_RESET" "$_col" "$_value" "$C_RESET"
@@ -1033,6 +1115,10 @@ if [ "$SD_STATE" = "written" ]; then
   note "systemctl --user daemon-reload"
   note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
 fi
+if [ "$WEBHOOK_STATE" = "webhook" ]; then
+  note "webhook: point the TLS proxy at http://$WEBHOOK_BIND"
+  note ". $CRED_FILE && zolly telegram-set-webhook --url $WEBHOOK_URL --secret \"\$ZOLLY_TELEGRAM_WEBHOOK_SECRET\""
+fi
 note "cd $TARGET"
 note "zolly doctor    # optional check"
 note "zolly           # manager + foreman + pr-reviewer"
@@ -1042,8 +1128,10 @@ if [ "$UNBORN" -eq 1 ]; then
 fi
 say ""
 note "Fill .agents/rules/project.md: architecture, layout, thresholds."
-if [ "$HAVE_CREDS" -eq 1 ]; then
-  note "Telegram: configured."
+if [ "$HAVE_CREDS" -eq 1 ] && [ "$WEBHOOK_STATE" = "webhook" ]; then
+  note "Telegram: webhook → $WEBHOOK_URL"
+elif [ "$HAVE_CREDS" -eq 1 ]; then
+  note "Telegram: configured (long-poll)."
 elif [ "$TG_STATE" = "token-only" ]; then
   warn "Telegram: token saved — message the bot, then re-run --force."
 else

@@ -76,8 +76,8 @@ installer, no download.
 | `~/.local/bin/zolly` | the shared binary, installed once |
 | `<project>/.agents/` | the office kit: rules, personas, memory, prompts, skills |
 | `<project>/.omp/mcp.json` | this office's MCP entry (written by the installer, gitignored) |
-| `~/.config/zolly/<freq>/credentials` | the Telegram token, allowed ids and the founder's handle — machine-local, never in the repo |
-| `~/.config/systemd/user/zolly-<freq>.service` | the Telegram listener for that project |
+| `~/.config/zolly/<freq>/credentials` | token, allowed ids, founder handle and webhook secret — machine-local, never in the repo |
+| `~/.config/systemd/user/zolly@<freq>.service` | the Telegram listener for that project |
 
 ## Isolation between offices
 
@@ -193,6 +193,9 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 | `--no-binary` | do not install the shared binary |
 | `--no-mcp` | do not deploy or register the MCP server |
 | `--no-telegram` | do not configure Telegram for this office |
+| `--webhook-url <https-url>` | Telegram pushes to this URL (blank = long-poll) |
+| `--webhook-bind <addr>` | local bind for the webhook listener (default `127.0.0.1:8080`) |
+| `--webhook-secret <s>` | Telegram `secret_token`; generated when absent |
 | `--yes`, `-y` | accept every default; ask nothing |
 | `--force` | install even if the target already has `.agents/` |
 | `--dry-run` | print what would happen, change nothing |
@@ -211,9 +214,22 @@ than accepting the list. The same call records the founder's `@handle` as
 because only a mention notifies there; a DM already does. Pass `--founder` with
 `--yes` — `zolly doctor` fails on an office with no founder name.
 
+**Webhook instead of polling.** Telegram can push instead of the office
+polling. Pass `--webhook-url https://<host>/<path>` (or
+`ZOLLY_TELEGRAM_WEBHOOK_URL`): the installer writes
+`ExecStart=… telegram-serve --webhook --bind 127.0.0.1:8080`, stores a generated
+`ZOLLY_TELEGRAM_WEBHOOK_SECRET` in the credentials, and prints the cutover.
+Point the TLS proxy at that bind, then run
+`zolly telegram-set-webhook --url <url> --secret "$ZOLLY_TELEGRAM_WEBHOOK_SECRET"`.
+`--webhook-bind` changes the local address; `zolly telegram-delete-webhook`
+returns to polling. A re-run reuses the URL Telegram already has instead of
+asking, so it cannot silently downgrade to long-polling.
+
 Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER_USERNAME`,
-`ZOLLY_TELEGRAM_API`, `ZOLLY_FOUNDER`, `ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`,
-`ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`, `ZOLLY_REF`.
+`ZOLLY_TELEGRAM_API`, `ZOLLY_TELEGRAM_WEBHOOK_URL`,
+`ZOLLY_TELEGRAM_WEBHOOK_BIND`, `ZOLLY_TELEGRAM_WEBHOOK_SECRET`, `ZOLLY_FOUNDER`,
+`ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`,
+`ZOLLY_REF`.
 
 It refuses to run when the target is not a git repository, when the base
 branch does not exist, when the target already has `.agents/` (without
