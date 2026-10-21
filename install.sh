@@ -684,6 +684,7 @@ EOF
 .agents/foreman-nudged.stamp
 .agents/zolly/telegram_offset.txt
 .agents/zolly/telegram_serve.lock
+.agents/zolly/state.md
 .agents/zolly/task_ledger.json
 .agents/zolly/task_ledger.json.tmp
 .agents/zolly/dead_letter.jsonl
@@ -702,6 +703,10 @@ EOF
 .omp/mcp.json
 EOF
     ok ".omp/mcp.json ignored"
+  fi
+  # Written by bare `zolly` at seat time; generated, never committed.
+  if ! grep -qxF '.agents/zolly/state.md' "$GITIGNORE" 2>/dev/null; then
+    printf '.agents/zolly/state.md\n' >> "$GITIGNORE"
   fi
   ok "runtime directories created"
 fi

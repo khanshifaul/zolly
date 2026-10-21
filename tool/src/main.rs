@@ -34,6 +34,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Deterministic triage: SMALL or LARGE, with the reasons.
+    Route {
+        text: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send one typed message on the office bus.
+    Bus {
+        handle: String,
+        /// task | done | object | ack | note
+        kind: String,
+        task: String,
+        #[arg(long)]
+        gate: Option<String>,
+        text: String,
+    },
+    /// Run the project's test command in a task worktree, record it in the result.
+    Verify { task_id: String },
     Foreman {
         prompt: String,
         /// Milliseconds to wait for the reply before giving up.
@@ -186,6 +204,15 @@ async fn main() -> Result<()> {
         Commands::Init => init(&herdr, &root),
         Commands::Brief { json } => brief_cmd(&root, json),
         Commands::Pulse { json } => brief_cmd(&root, json),
+        Commands::Route { text, json } => route_cmd(&text, json),
+        Commands::Bus {
+            handle,
+            kind,
+            task,
+            gate,
+            text,
+        } => bus_cmd(&handle, &kind, &task, gate.as_deref(), &text),
+        Commands::Verify { task_id } => verify_cmd(&root, &task_id),
         Commands::Foreman { prompt, timeout_ms } => foreman(&herdr, &root, &prompt, timeout_ms),
         Commands::Reviewer { task_id, timeout_ms } => reviewer(&herdr, &root, &task_id, timeout_ms),
         Commands::WorkerBrief {
@@ -256,6 +283,16 @@ fn seat(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
         );
     }
 
+    // Fail fast: a missing config or a non-repo cannot run an office. A dirty
+    // tree or an inactive listener is reported in the state, not fatal.
+    let checks = gather_checks(root)?;
+    if let Some(bad) = checks.iter().find(|c| !c.ok && c.name == "config") {
+        anyhow::bail!("office not ready: {} — {}", bad.name, bad.detail);
+    }
+    if !git_ok(root, &["rev-parse", "--git-dir"]) {
+        anyhow::bail!("not a git repository: {}", root.display());
+    }
+
     let pane = herdr.pane_current().context("Failed to get current pane")?;
     if let Some(agent) = pane.agent.as_deref() {
         anyhow::bail!(
@@ -283,15 +320,93 @@ fn seat(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
         eprintln!("zolly: could not open the seats: {e:#}");
     }
 
+    let state = write_boot_state(root, &office);
+    match &state {
+        Ok(path) => println!("state: {}", path.display()),
+        Err(e) => eprintln!("zolly: could not write boot state: {e:#}"),
+    }
+
     println!("Seating {} for {}", office.agent("zolly"), office.project);
-    let status = std::process::Command::new("omp")
-        .arg(format!("@{}", persona.display()))
-        .status()
-        .context("Failed to start omp")?;
+    let mut omp = std::process::Command::new("omp");
+    omp.arg(format!("@{}", persona.display()));
+    if let Ok(path) = &state {
+        omp.arg(format!("@{}", path.display()));
+    }
+    let status = omp.status().context("Failed to start omp")?;
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// The one-page state the manager starts from. It replaces the survey the
+/// manager used to run (git status, pulse, memory reads) with facts measured
+/// once, at seat time.
+fn write_boot_state(
+    root: &std::path::Path,
+    office: &Office,
+) -> Result<std::path::PathBuf> {
+    let brief = brief::generate_brief(root).ok();
+    let checks = gather_checks(root).unwrap_or_default();
+    let failing: Vec<&str> = checks.iter().filter(|c| !c.ok).map(|c| c.name).collect();
+    let branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "?".into());
+    let commits = git_out(root, &["rev-list", "--count", "HEAD"]).unwrap_or_else(|_| "0".into());
+    let dirty = git_out(root, &["status", "--porcelain"])
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+    let herdr = herdr::HerdrClient::new(root.to_path_buf());
+    let seats: Vec<String> = herdr
+        .agents_for_office(root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| a.name)
+        .collect();
+
+    let mut out = String::new();
+    out.push_str("# Office state — written by `zolly` at seat time. Do not edit.\n\n");
+    out.push_str(&format!("repo: {}\n", root.display()));
+    out.push_str(&format!(
+        "branch: {} · commits: {} · uncommitted: {}\n",
+        branch.trim(),
+        commits.trim(),
+        dirty
+    ));
+    out.push_str(&format!(
+        "seats: {}\n",
+        if seats.is_empty() {
+            "none".to_string()
+        } else {
+            seats.join(", ")
+        }
+    ));
+    if let Some(brief) = brief {
+        out.push_str(&format!(
+            "workers: {} · gates waiting: {} · recent results: {}\n",
+            brief.waiting.workers,
+            brief.gates.len(),
+            brief.waiting.recent_results.len()
+        ));
+        if !brief.waiting.unparseable_results.is_empty() {
+            out.push_str(&format!(
+                "unreadable results: {}\n",
+                brief.waiting.unparseable_results.len()
+            ));
+        }
+        out.push_str(&format!("next: {}\n", brief.next_action));
+    }
+    out.push_str(&format!(
+        "doctor: {}\n",
+        if failing.is_empty() {
+            "all green".to_string()
+        } else {
+            format!("failing: {}", failing.join(", "))
+        }
+    ));
+
+    let path = office.root.join(".agents/zolly/state.md");
+    std::fs::write(&path, out)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(path)
 }
 
 fn register_pane(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
@@ -519,6 +634,257 @@ fn brief_cmd(root: &std::path::Path, json: bool) -> Result<()> {
         print!("{}", render::render_cli(&sections));
     }
     Ok(())
+}
+
+fn route_cmd(text: &str, json: bool) -> Result<()> {
+    let decision = classify(text);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "size": if decision.large { "LARGE" } else { "SMALL" },
+                "gate": if decision.human { "human" } else { "auto" },
+                "reasons": decision.reasons,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("{}", if decision.large { "LARGE" } else { "SMALL" });
+    println!("  reasons: {}", decision.reasons.join("; "));
+    if decision.human {
+        println!("  gate: human");
+    }
+    if decision.large {
+        println!("  next: zolly foreman {:?}", text);
+    } else {
+        println!("  next: do it yourself");
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct RouteDecision {
+    large: bool,
+    human: bool,
+    reasons: Vec<String>,
+}
+
+/// Deterministic triage. The words are the rule; the model only explains an
+/// ambiguity the founder has to settle.
+fn classify(text: &str) -> RouteDecision {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    let paths = words
+        .iter()
+        .filter(|w| w.contains('/') || has_short_extension(w))
+        .count();
+    let gate_hits: Vec<&str> = [
+        "production",
+        "deploy",
+        "release",
+        "publish",
+        "customer",
+        "money",
+        "billing",
+        "payment",
+        "invoice",
+        "price",
+        "spend",
+    ]
+    .iter()
+    .copied()
+    .filter(|k| lower.contains(k))
+    .collect();
+    let large_hits: Vec<&str> = [
+        "refactor",
+        "redesign",
+        "rewrite",
+        "migrat",
+        "architecture",
+        "schema",
+        "database",
+        "authentication",
+        "integrat",
+        "audit",
+        "rollout",
+        "pipeline",
+    ]
+    .iter()
+    .copied()
+    .filter(|k| lower.contains(k))
+    .collect();
+    let small_verb = [
+        "fix", "rename", "tweak", "adjust", "update", "bump", "typo", "comment", "label", "copy",
+        "remove",
+    ]
+    .iter()
+    .copied()
+    .find(|k| {
+        words
+            .iter()
+            .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *k)
+    });
+
+    let mut reasons = Vec::new();
+    if !gate_hits.is_empty() {
+        reasons.push(format!("gate word: {}", gate_hits.join(", ")));
+    }
+    if !large_hits.is_empty() {
+        reasons.push(format!("large word: {}", large_hits.join(", ")));
+    }
+    reasons.push(format!("{} words", words.len()));
+    reasons.push(format!("{} path(s)", paths));
+    if let Some(v) = small_verb {
+        reasons.push(format!("verb: {v}"));
+    }
+
+    let human = !gate_hits.is_empty();
+    let large = human || !large_hits.is_empty() || words.len() > 45 || paths > 3;
+    RouteDecision {
+        large,
+        human,
+        reasons,
+    }
+}
+
+fn has_short_extension(word: &str) -> bool {
+    word.rsplit_once('.')
+        .map(|(_, ext)| {
+            !ext.is_empty()
+                && ext.len() <= 4
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .unwrap_or(false)
+}
+
+fn envelope(kind: &str, task: &str, gate: Option<&str>, text: &str) -> Result<String> {
+    let kind = kind.trim();
+    if !["task", "done", "object", "ack", "note"].contains(&kind) {
+        anyhow::bail!("kind must be task|done|object|ack|note, got '{kind}'");
+    }
+    let gate = gate.unwrap_or("auto");
+    Ok(format!("[{kind}] task={task} gate={gate}\n{text}"))
+}
+
+fn bus_cmd(
+    handle: &str,
+    kind: &str,
+    task: &str,
+    gate: Option<&str>,
+    text: &str,
+) -> Result<()> {
+    let message = envelope(kind, task, gate, text)?;
+    let output = std::process::Command::new("radio")
+        .args(["pm", handle, &message])
+        .output()
+        .context("Failed to run radio")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "radio pm failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    println!("{message}");
+    Ok(())
+}
+
+fn parse_test_command(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let command = line.trim().strip_prefix("test-command:")?.trim();
+        if command.is_empty() || command.eq_ignore_ascii_case("TODO") {
+            None
+        } else {
+            Some(command.to_string())
+        }
+    })
+}
+
+fn find_test_command(root: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(".agents/rules/project.md")).ok()?;
+    parse_test_command(&text)
+}
+
+/// Replace one `## <name>` section's body, keeping every other section. A
+/// missing section is appended.
+fn replace_section(document: &str, name: &str, body: &str) -> String {
+    let marker = format!("## {name}");
+    let mut out = String::new();
+    let mut lines = document.lines().peekable();
+    let mut replaced = false;
+    while let Some(line) = lines.next() {
+        if line.trim_end() == marker {
+            out.push_str(&marker);
+            out.push_str("\n\n");
+            out.push_str(body.trim_end());
+            out.push_str("\n\n");
+            while let Some(next) = lines.peek() {
+                if next.starts_with("## ") {
+                    break;
+                }
+                lines.next();
+            }
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !replaced {
+        out.push_str(&format!("\n## {name}\n\n{}\n", body.trim_end()));
+    }
+    out
+}
+
+fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
+    let command = find_test_command(root).context(
+        "no test command — add `test-command: <cmd>` to .agents/rules/project.md",
+    )?;
+    let worktree = root.join(".agents/worktrees").join(task_id);
+    if !worktree.is_dir() {
+        anyhow::bail!("no worktree at {}", worktree.display());
+    }
+    if worktree.canonicalize().ok() == root.canonicalize().ok() {
+        anyhow::bail!("refusing to verify on the main checkout");
+    }
+    let result_path = root.join(".agents/results").join(format!("{task_id}.md"));
+    if !result_path.is_file() {
+        anyhow::bail!(
+            "no result file at {} — the worker writes it first",
+            result_path.display()
+        );
+    }
+
+    let output = std::process::Command::new("timeout")
+        .args(["600", "sh", "-c", &command])
+        .current_dir(&worktree)
+        .output()
+        .context("Failed to run test-command")?;
+    let code = output.status.code().unwrap_or(-1);
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let all: Vec<&str> = text.lines().collect();
+    let tail = all[all.len().saturating_sub(80)..].join("\n");
+    let block = format!(
+        "- command: `{command}`\n- exit: {code}\n- at: {}\n- output:\n\n```\n{}\n```",
+        chrono::Utc::now().to_rfc3339(),
+        tail
+    );
+
+    let document = std::fs::read_to_string(&result_path)
+        .with_context(|| format!("Failed to read {}", result_path.display()))?;
+    let updated = replace_section(&document, "Verify", &block);
+    std::fs::write(&result_path, updated)
+        .with_context(|| format!("Failed to write {}", result_path.display()))?;
+
+    if code == 0 {
+        println!("verify: passed — {command}");
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "verify: failed (exit {code}) — recorded in {}",
+            result_path.display()
+        )
+    }
 }
 
 fn foreman(
@@ -1444,7 +1810,7 @@ fn stamp(t: std::time::SystemTime) -> String {
 /// Self-check. Fails loudly on the recurring failure classes: a stale
 /// binary, dead commands, broken skill symlinks, token-source drift, a bad
 /// systemd unit. Exit code 0 = healthy; 1 = at least one check failed.
-fn doctor(root: &std::path::Path, json: bool) -> Result<()> {
+fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
     let mut checks: Vec<Check> = Vec::new();
     let office = Office::load(root.to_path_buf());
     let tool_dir = root.join(".agents/zolly/tool");
@@ -1696,6 +2062,12 @@ fn doctor(root: &std::path::Path, json: bool) -> Result<()> {
         });
     }
 
+    Ok(checks)
+}
+
+/// Present the checks. Exit 0 = healthy; 1 = at least one failed.
+fn doctor(root: &std::path::Path, json: bool) -> Result<()> {
+    let checks = gather_checks(root)?;
     let failed = checks.iter().filter(|c| !c.ok).count();
 
     if json {
@@ -1728,7 +2100,66 @@ fn doctor(root: &std::path::Path, json: bool) -> Result<()> {
     if failed == 0 {
         Ok(())
     } else {
-        anyhow::bail!("doctor: {} check(s) failed", failed);
+        anyhow::bail!("doctor: {} check(s) failed", failed)
+    }
+}
+
+#[cfg(test)]
+mod intelligence_tests {
+    use super::*;
+
+    #[test]
+    fn small_fix_is_small() {
+        let d = classify("fix the login button");
+        assert!(!d.large && !d.human);
+    }
+
+    #[test]
+    fn gate_words_make_it_large_and_human() {
+        let d = classify("publish the release notes");
+        assert!(d.large && d.human);
+    }
+
+    #[test]
+    fn schema_work_is_large() {
+        assert!(classify("redesign the billing schema").large);
+    }
+
+    #[test]
+    fn envelope_is_typed_and_rejects_unknown_kinds() {
+        assert_eq!(
+            envelope("task", "t-1", None, "do it").unwrap(),
+            "[task] task=t-1 gate=auto\ndo it"
+        );
+        assert!(envelope("bogus", "t-1", None, "x").is_err());
+    }
+
+    #[test]
+    fn test_command_is_read_from_project_md() {
+        assert_eq!(
+            parse_test_command("x\ntest-command: bun test\n"),
+            Some("bun test".into())
+        );
+        assert_eq!(parse_test_command("test-command: TODO"), None);
+        assert_eq!(parse_test_command("no field"), None);
+    }
+
+    #[test]
+    fn verify_section_is_replaced_not_duplicated() {
+        let doc = "---\nid: t\n---\n\n## Summary\n\nx\n\n## Verify\n\nold\n\n## Commit\n\nabc\n";
+        let out = replace_section(doc, "Verify", "- command: `bun test`\n- exit: 0");
+        assert!(out.contains("## Summary"));
+        assert!(out.contains("## Commit"));
+        assert!(out.contains("- exit: 0"));
+        assert!(!out.contains("old"));
+        assert_eq!(out.matches("## Verify").count(), 1);
+    }
+
+    #[test]
+    fn verify_section_is_appended_when_missing() {
+        let out = replace_section("## Summary\n\nx\n", "Verify", "- exit: 0");
+        assert!(out.contains("## Verify"));
+        assert!(out.contains("- exit: 0"));
     }
 }
 

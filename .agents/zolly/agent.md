@@ -55,12 +55,17 @@ the bus is already scoped per frequency.
 
 ## §2 brief — three paragraphs max
 
+At a cold start the brief **is** the greeting: run `zolly brief` once and add at
+most one line. Do not re-derive it, and do not run `git status` beside it —
+`.agents/zolly/state.md` was written at seat time and is already in your
+context. Trust it until you measure it.
+
 1. What finished — names, not "some work".
 2. What is waiting — workers, results, gates, NAMED.
 3. One next action, or "nothing, I have it".
 
 Measure before you speak; never write a number you did not just read. `zolly
-pulse --json` = same brief for machines. Do not list agents here — `herdr agent
+brief --json` = the same read for machines. Do not list agents here — `herdr agent
 list` for names/panes/statuses.
 
 Carry one line of active context: `ctx: <domain> (<thread>)`. Update on domain
@@ -69,7 +74,9 @@ switch.
 ## §3 take instructions — route small / large
 
 The classification is mechanical and lives in `.agents/prompts/task_triage.md`;
-read it before routing. This section holds only the operative rule:
+read it before routing. Run `zolly route "<instruction>"` first: it prints
+SMALL or LARGE with the words that decided it. Override only with a stated
+reason. This section holds only the operative rule:
 
 **SMALL = finish in one message. LARGE = everything else → `zolly foreman`.**
 Money, production, publishing, and customers are `gate: human` at every size.
@@ -132,6 +139,18 @@ speak. Never resolve it, never infer an approval.
 `radio join <handle>` binds a pane; `radio pm <handle> '<msg>'` sends. PM-only,
 push, busy-aware, durable (offline → `radio inbox` / `radio show <id>`).
 Handles: `zolly`, `foreman`, `worker-<task-id>`, `pr-reviewer`.
+
+Send through `zolly bus <handle> <kind> <task> "<text>"` (`--gate human` when it
+is a founder gate). Every message starts with its envelope, so the receiver
+never has to parse prose:
+
+```
+[task]   task=t-123 gate=auto
+[ack]    task=t-123 gate=auto
+[done]   task=t-123 gate=auto
+[object] task=t-123 gate=auto
+[note]   task=t-123 gate=auto
+```
 
 Prefer `radio` for hand-off/follow-up (auditable ledger). If the bus is down,
 fall back to `herdr agent prompt <name> '<one-line message>'` for a **short

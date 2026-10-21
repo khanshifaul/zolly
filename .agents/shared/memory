@@ -5,6 +5,7 @@
 #   memory confirm <id>
 #   memory retract <id> [--promoted-to <file>]
 #   memory read  [<decision|learning|current|archive|all>]
+#   memory search <terms>
 #   memory archive
 #   memory check
 #
@@ -215,6 +216,15 @@ acquire_lock() {
 }
 
 # ── add ───────────────────────────────────────────────────────────────────────
+# The id of the entry whose body already contains this exact text, if any.
+# A second identical correction is recurrence, not a new fact.
+entry_id_for_text() {
+  awk -v t="$1" '
+    /^## [DLC]-[0-9][0-9][0-9][0-9] \|/ { id=$2 }
+    index($0, t) { if (id != "") { print id; exit } }
+  ' "$2"
+}
+
 cmd_add() {
   local kind="${1:-}"
   case "$kind" in
@@ -251,6 +261,13 @@ cmd_add() {
   prefix="$(prefix_for_kind "$kind")"
   base="$(base_for_kind "$kind")"
   ensure_file "$f" "$kind" "$bound"
+
+  duplicate="$(entry_id_for_text "$text" "$f")"
+  if [ -n "$duplicate" ]; then
+    printf 'memory: already recorded as %s — this is recurrence, not a new fact.\n' "$duplicate" >&2
+    printf '        Promote it to a rule instead: memory retract %s --promoted-to .agents/rules/<file>.md\n' "$duplicate" >&2
+    exit 0
+  fi
 
   id="$(printf '%s-%04d' "$prefix" "$(next_n "$prefix" "$f" "$base")")"
   date="$(date -u +%Y-%m-%d)"
@@ -517,13 +534,31 @@ cmd_check() {
   return $rc
 }
 
+cmd_search() {
+  local terms="$*" found=0 f hits
+  [ -n "${terms// }" ] || die "usage: memory search <terms>"
+  for f in "$DECISIONS" "$LEARNINGS" "$CURRENT" "$ARCHIVE"/*.md; do
+    [ -f "$f" ] || continue
+    hits=$(awk -v pat="$terms" '
+      /^## [DLC]-[0-9][0-9][0-9][0-9] \|/ { id=$2 }
+      index(tolower($0), tolower(pat)) && id != "" { printf "%s: %s\n", id, $0 }
+    ' "$f")
+    if [ -n "$hits" ]; then
+      printf '%s\n' "$hits"
+      found=1
+    fi
+  done
+  [ "$found" -eq 1 ] || { echo "memory: no match for '$terms'" >&2; return 1; }
+}
+
 case "${1:-}" in
   add)     shift; cmd_add "$@" ;;
   confirm) shift; cmd_confirm "$@" ;;
   retract) shift; cmd_retract "$@" ;;
   read)    shift; cmd_read "$@" ;;
+  search)  shift; cmd_search "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   check)   shift; cmd_check "$@" ;;
   -h|--help|help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "usage: memory [--agent <name>] <add|confirm|retract|read|archive|check>   (see 'memory --help')" ;;
+  *) die "usage: memory [--agent <name>] <add|confirm|retract|read|search|archive|check>   (see 'memory --help')" ;;
 esac

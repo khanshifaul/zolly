@@ -597,18 +597,14 @@ mod poll_tests {
 mod voice_tests {
     use super::*;
 
-    /// Piper binary resolution: ZOLLY_PIPER_BIN wins outright.
+    /// Resolution order: ZOLLY_PIPER_BIN wins, then the known install path,
+    /// then the bare command name on PATH. One test: the env var is
+    /// process-global, and two tests mutating it race under the parallel
+    /// harness (observed 2026-10-21).
     #[test]
-    fn piper_bin_env_override_wins() {
+    fn piper_bin_resolution_order() {
         unsafe { std::env::set_var("ZOLLY_PIPER_BIN", "/custom/piper") };
         assert_eq!(piper_bin_path(), "/custom/piper");
-        unsafe { std::env::remove_var("ZOLLY_PIPER_BIN") };
-    }
-
-    /// Known location is used when no override is set and piper is installed
-    /// there; otherwise the bare command name, resolved on PATH at spawn time.
-    #[test]
-    fn piper_bin_known_location_used() {
         unsafe { std::env::remove_var("ZOLLY_PIPER_BIN") };
         let known = dirs::home_dir().map(|h| h.join(".local/bin/piper"));
         match known {

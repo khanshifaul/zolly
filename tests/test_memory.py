@@ -101,5 +101,26 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("budget — OK", result.stdout)
 
 
+    def test_search_returns_the_entry_id(self):
+        self.assertEqual(
+            self.run_memory("add", "learning", "The lock is fd 9.").returncode, 0
+        )
+        found = self.run_memory("search", "lock is")
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertIn("L-0001", found.stdout)
+        self.assertIn("The lock is fd 9.", found.stdout)
+
+    def test_second_identical_add_is_recurrence(self):
+        self.assertEqual(
+            self.run_memory("add", "learning", "The lock is fd 9.").returncode, 0
+        )
+        again = self.run_memory("add", "learning", "The lock is fd 9.")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("already recorded as L-0001", again.stderr)
+        self.assertIn("recurrence", again.stderr)
+        read = self.run_memory("read", "learning")
+        self.assertEqual(read.stdout.count("## L-"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

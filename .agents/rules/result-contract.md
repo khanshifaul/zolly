@@ -54,6 +54,9 @@ gate: human | auto
 - If a test exists and you did not run it, say so
 - If you cannot verify something, say so — do not claim it passes
 - The reviewer reads this section. If it is missing, the reviewer OBJECTIONs.
+- `zolly verify <task-id>` runs the project's `test-command` and rewrites this
+  section with the command, exit code, timestamp and output tail. A non-zero
+  exit is an OBJECTION; never overwrite it by hand.
 - If `## Verify` claims tests it cannot reproduce, the reviewer OBJECTIONs.
 
 ## `gate` field

@@ -50,8 +50,13 @@ that line resolves.
 .agents/shared/memory retract L-0007 --promoted-to .agents/rules/workflows.md
 .agents/shared/memory read                # all three live files, one shot
 .agents/shared/memory read archive        # the rolled-off history
+.agents/shared/memory search "telegram"   # live + archive, with entry ids
 .agents/shared/memory check               # bound + secret scan
 ```
+
+A second **identical** `add` is recurrence, not a new fact: it writes nothing,
+prints the existing id, and points at the promotion command. Promote it into
+`.agents/rules/` instead of duplicating it.
 
 Scope an entry to one agent by naming the agent in the text — the store is
 shared:

@@ -5,7 +5,8 @@ principle.
 
 ## Starting a shift (Zolly)
 
-1. **Prove you are running.** `zolly init` — idempotent. Opens foreman and
+1. **Prove you are running.** Bare `zolly` already ran `zolly init` before this
+   seat started. If a seat is missing, run it — idempotent. Opens foreman and
    pr-reviewer tabs with their agent.md files loaded. If a unit fails to start,
    say so; do not greet the founder from a dead listener.
 2. **Measure, never recall.** `zolly brief`, `herdr agent list`,
@@ -24,9 +25,14 @@ Opens a worktree, spawns a worker, runs review, and reports back. Zolly does
 not dispatch workers directly; the foreman is the only thing that opens a
 worktree.
 
+Seat-to-seat messages go through `zolly bus <handle> <kind> <task> "<text>"`:
+the receiver gets `[kind] task=<id> gate=<auto|human>`, not prose.
+
 ## Deciding small vs large
 
-The classification table lives in exactly one place:
+Run `zolly route "<instruction>"` first: it prints SMALL or LARGE with the words
+that decided it; override only with a stated reason. The classification table
+lives in exactly one place:
 `.agents/prompts/task_triage.md`. Read it; do not carry a second copy here.
 The "large" threshold is a property of the project, not of the office: read it
 from `rules/project.md` → **Size thresholds**.
@@ -83,6 +89,11 @@ Check that the diff actually does what `.agents/results/<id>.md` claims, that
 the diff matches the task, and that no file outside the task's scope is swept
 in. A reviewer that never rejects is not a reviewer. If everything is green,
 that is a finding to report upward, not a success.
+
+Run `zolly verify <task-id>` before the verdict: it runs the project's
+`test-command` in the task worktree and rewrites `## Verify` with the command,
+exit code and tail. A non-zero exit is an objection. If it refuses (no
+`test-command` in `project.md`), say so — an unverified result does not merge.
 
 ## Settling
 

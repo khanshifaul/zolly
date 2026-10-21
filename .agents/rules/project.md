@@ -21,6 +21,12 @@ a question you must answer from the tree before you plan anything.
 - Client side: TODO — what does a user actually talk to?
 - Test command: TODO — the exact command that runs the suite.
 
+test-command: TODO
+
+`zolly verify <task-id>` runs that line in the task worktree and rewrites the
+result's `## Verify` section. Leave it as `TODO` until you know the command;
+verify then refuses rather than guessing.
+
 Before writing a plan, spec, or import: **check the tree first.** Never write
 against a service that is not on disk. If this file disagrees with the tree,
 the tree is right and this file is a bug — fix it here.
