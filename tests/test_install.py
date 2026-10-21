@@ -309,7 +309,8 @@ class InstallTests(unittest.TestCase):
         self.assertIn(
             "telegram-set-webhook --url https://office.example.com/tg", result.stdout
         )
-        self.assertIn("point the TLS proxy", result.stdout)
+        self.assertIn("zolly telegram-set-webhook --url https://office.example.com/tg", result.stdout)
+        self.assertNotIn("&& zolly telegram-set-webhook", result.stdout)
         self.assertIn(
             "ZOLLY_TELEGRAM_WEBHOOK_URL=https://office.example.com/tg\n", creds
         )

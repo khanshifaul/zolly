@@ -358,6 +358,17 @@ pub async fn cmd_set_webhook(url: &str, secret: Option<String>) -> Result<()> {
     let token = get_token()?;
     let client = get_client();
 
+    // A shell run has no systemd EnvironmentFile. Load the office credentials
+    // when the secret did not arrive by flag or environment, so the command is
+    // just `zolly telegram-set-webhook --url <url>`.
+    if secret.is_none() && std::env::var("ZOLLY_TELEGRAM_WEBHOOK_SECRET").is_err() {
+        super::config::load_credentials();
+    }
+    let secret = secret.or_else(|| {
+        std::env::var("ZOLLY_TELEGRAM_WEBHOOK_SECRET")
+            .ok()
+            .filter(|value| !value.is_empty())
+    });
     if let Some(s) = &secret {
         validate_secret(s)?;
     }

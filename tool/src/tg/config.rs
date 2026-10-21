@@ -26,18 +26,33 @@ pub fn zolly_agent(root: &std::path::Path) -> String {
     crate::office::Office::load(root.to_path_buf()).agent("zolly")
 }
 
-/// Shell fallback: `<office>/.agents/zolly/.env`. The systemd unit supplies the
-/// same values through EnvironmentFile; this path serves commands run from a
-/// shell. Nothing here names a project — the office is wherever the process is.
-fn load_shell_env() {
-    if let Ok(root) = std::env::current_dir() {
-        let path = root.join(".agents/zolly/.env");
-        if path.is_file() {
-            let _ = dotenv::from_path(&path);
-            return;
-        }
+/// Shell fallback for commands run by hand. Precedence: the environment, then
+/// `<office>/.agents/zolly/.env`, then the file the installer writes for
+/// systemd (`~/.config/zolly/<frequency>/credentials`). The last one matters
+/// because a sourced credentials file sets shell variables, not exported ones,
+/// so `. credentials && zolly …` did not reach this process.
+pub(crate) fn load_credentials() {
+    let Ok(root) = std::env::current_dir() else {
+        return;
+    };
+    let local = root.join(".agents/zolly/.env");
+    if local.is_file() {
+        let _ = dotenv::from_path(&local);
+    } else {
+        let _ = dotenv::dotenv();
     }
-    let _ = dotenv::dotenv();
+    let office = crate::office::Office::load(root);
+    let credentials = dirs::home_dir()
+        .map(|home| {
+            home.join(".config/zolly")
+                .join(&office.frequency)
+                .join("credentials")
+        })
+        .filter(|path| path.is_file());
+    if let Some(path) = credentials {
+        // dotenv never overrides a variable that is already set.
+        let _ = dotenv::from_path(path);
+    }
 }
 
 /// Telegram long-poll timeout. Kept short so the serve loop's watchdog
@@ -158,7 +173,7 @@ pub async fn json_redacted<T: serde::de::DeserializeOwned>(
 
 pub fn get_token() -> Result<String> {
     if std::env::var("ZOLLY_TELEGRAM_TOKEN").is_err() {
-        load_shell_env();
+        load_credentials();
     }
     std::env::var("ZOLLY_TELEGRAM_TOKEN").context(
         "ZOLLY_TELEGRAM_TOKEN not set. Set it to your bot token from @BotFather.",
@@ -167,7 +182,7 @@ pub fn get_token() -> Result<String> {
 
 pub fn get_allowed_ids() -> Result<Vec<i64>> {
     if std::env::var("ZOLLY_ALLOWED_IDS").is_err() {
-        load_shell_env();
+        load_credentials();
     }
     let ids_str = std::env::var("ZOLLY_ALLOWED_IDS").context(
         "ZOLLY_ALLOWED_IDS not set. Set it to comma-separated Telegram user IDs.",
@@ -191,8 +206,20 @@ pub fn get_client() -> Client {
         .expect("Failed to build HTTP client")
 }
 
+/// Bot API root, including `/bot`. `ZOLLY_TELEGRAM_API` is the server base
+/// (the same variable the installer uses for discovery), so a local Bot API
+/// server or a test stub can stand in for Telegram.
+pub fn api_root() -> String {
+    std::env::var("ZOLLY_TELEGRAM_API")
+        .ok()
+        .map(|base| base.trim().trim_end_matches('/').to_string())
+        .filter(|base| !base.is_empty())
+        .map(|base| format!("{base}/bot"))
+        .unwrap_or_else(|| API_BASE.to_string())
+}
+
 pub fn api_url(token: &str, method: &str) -> String {
-    format!("{}{}/{}", API_BASE, token, method)
+    format!("{}{token}/{method}", api_root())
 }
 
 #[cfg(test)]

@@ -1096,7 +1096,6 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
       [ -n "$WEBHOOK_SECRET" ] || WEBHOOK_SECRET=$(gen_webhook_secret)
       validate_webhook_secret "$WEBHOOK_SECRET"
       WEBHOOK_STATE="webhook"
-      note "webhook: $WEBHOOK_URL → http://$WEBHOOK_BIND (TLS proxy required)"
     else
       WEBHOOK_STATE="poll"
     fi
@@ -1237,8 +1236,8 @@ if [ "$SD_STATE" = "written" ]; then
   note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
 fi
 if [ "$WEBHOOK_STATE" = "webhook" ]; then
-  note "webhook: point the TLS proxy at http://$WEBHOOK_BIND"
-  note ". $CRED_FILE && zolly telegram-set-webhook --url $WEBHOOK_URL --secret \"\$ZOLLY_TELEGRAM_WEBHOOK_SECRET\""
+  note "webhook: $WEBHOOK_URL → http://$WEBHOOK_BIND"
+  note "zolly telegram-set-webhook --url $WEBHOOK_URL"
 fi
 note "cd $TARGET"
 note "zolly doctor    # optional check"

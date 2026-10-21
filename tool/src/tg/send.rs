@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::config::{
-    api_url, get_allowed_ids, get_client, get_token, json_redacted, send_redacted, RequestFailure,
-    API_BASE,
+    api_root, api_url, get_allowed_ids, get_client, get_token, json_redacted, send_redacted,
+    RequestFailure,
 };
 use super::format::{is_stdin_marker, read_stdin, split_message};
 use super::types::{Message, TelegramResponse, User};
@@ -467,7 +467,7 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
         })?;
 
     // 2. Download the ogg/opus file
-    let url = format!("{}{}/{}", API_BASE, token, file_path);
+    let url = format!("{}{token}/{file_path}", api_root());
     let audio = send_redacted(client.get(&url), "voice file download failed")
         .await?
         .bytes()

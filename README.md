@@ -221,16 +221,39 @@ because only a mention notifies there; a DM already does. Pass `--founder` with
 **Webhook instead of polling.** Telegram can push instead of the office
 polling. Pass `--webhook-url https://<host>/<path>` (or
 `ZOLLY_TELEGRAM_WEBHOOK_URL`): the installer writes
-`ExecStart=… telegram-serve --webhook --bind 127.0.0.1:8080`, stores a generated
-`ZOLLY_TELEGRAM_WEBHOOK_SECRET` in the credentials, and prints the cutover.
-Point the TLS proxy at that bind, then run
-`zolly telegram-set-webhook --url <url> --secret "$ZOLLY_TELEGRAM_WEBHOOK_SECRET"`.
+`ExecStart=… telegram-serve --webhook --bind 127.0.0.1:<port>`, stores a generated
+`ZOLLY_TELEGRAM_WEBHOOK_SECRET`, and prints the cutover. Point the TLS proxy at
+that bind, then run `zolly telegram-set-webhook --url <url>` — it reads the
+token and the secret from the office credentials, so no `source` and no
+`--secret` is needed.
+
 `--webhook-bind` changes the local address. If the default 8080 is taken
 (llama.cpp often holds it), the installer moves to the next free port, prints
 it, and remembers it in the credentials so a re-run keeps it; an explicit busy
-bind is refused. `zolly telegram-delete-webhook`
-returns to polling. A re-run reuses the URL Telegram already has instead of
-asking, so it cannot silently downgrade to long-polling.
+bind is refused. `zolly telegram-delete-webhook` returns to polling. A re-run
+reuses the URL Telegram already has instead of asking, so it cannot silently
+downgrade to long-polling.
+
+**Public endpoint.** The listener is loopback-only; Telegram needs a public
+HTTPS URL that forwards to it. Anything that terminates TLS works:
+
+| Front | Command / setup | Stable URL | Own domain |
+|---|---|---|---|
+| Cloudflare quick tunnel | `cloudflared tunnel --url http://127.0.0.1:<port>` | no — new hostname each start | no |
+| Cloudflare named tunnel | `cloudflared tunnel run <name>` + DNS route | yes | yes (a zone on Cloudflare) |
+| Tailscale Funnel | `tailscale funnel <port>` | yes — `https://<host>.<tailnet>.ts.net` | no |
+| ngrok | `ngrok http <port>` | free static domain, else new each start | no |
+| localtunnel | `npx localtunnel --port <port>` | no | no |
+| Your server | Caddy/nginx + Let's Encrypt | yes | yes |
+
+Some networks do not pass Cloudflare quick tunnels (the URL answers 404 or
+times out); use a named tunnel or one of the other fronts in that case.
+Tailscale Funnel must be enabled for the tailnet and publishes only on
+443/8443/10000; `tailscale funnel <port>` maps public 443 to the local port.
+An ephemeral URL has to be re-registered after every restart
+(`zolly telegram-set-webhook --url <new-url>`); a dead quick tunnel leaves
+Telegram retrying until you re-register or run
+`zolly telegram-delete-webhook`.
 
 Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER_USERNAME`,
 `ZOLLY_TELEGRAM_API`, `ZOLLY_TELEGRAM_WEBHOOK_URL`,
