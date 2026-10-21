@@ -198,7 +198,7 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 | `--no-mcp` | do not deploy or register the MCP server |
 | `--no-telegram` | do not configure Telegram for this office |
 | `--webhook-url <https-url>` | Telegram pushes to this URL (blank = long-poll) |
-| `--webhook-bind <addr>` | local bind for the webhook listener (default `127.0.0.1:8080`) |
+| `--webhook-bind <addr>` | local bind for the webhook listener (default `127.0.0.1:8080`; a busy default moves to the next free port) |
 | `--webhook-secret <s>` | Telegram `secret_token`; generated when absent |
 | `--yes`, `-y` | accept every default; ask nothing |
 | `--force` | install even if the target already has `.agents/` |
@@ -225,9 +225,10 @@ polling. Pass `--webhook-url https://<host>/<path>` (or
 `ZOLLY_TELEGRAM_WEBHOOK_SECRET` in the credentials, and prints the cutover.
 Point the TLS proxy at that bind, then run
 `zolly telegram-set-webhook --url <url> --secret "$ZOLLY_TELEGRAM_WEBHOOK_SECRET"`.
-`--webhook-bind` changes the local address; it must be free. The installer
-refuses a busy bind (port 8080 is commonly taken by llama.cpp) instead of
-writing a unit that cannot start. `zolly telegram-delete-webhook`
+`--webhook-bind` changes the local address. If the default 8080 is taken
+(llama.cpp often holds it), the installer moves to the next free port, prints
+it, and remembers it in the credentials so a re-run keeps it; an explicit busy
+bind is refused. `zolly telegram-delete-webhook`
 returns to polling. A re-run reuses the URL Telegram already has instead of
 asking, so it cannot silently downgrade to long-polling.
 

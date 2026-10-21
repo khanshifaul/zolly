@@ -51,7 +51,9 @@
 #                                  credentials too: an empty stored value means
 #                                  the office chose long-poll
 #   ZOLLY_TELEGRAM_WEBHOOK_BIND    local bind for the webhook listener
-#                                  (default 127.0.0.1:8080, behind a TLS proxy)
+#                                  (default 127.0.0.1:8080, behind a TLS proxy;
+#                                  a busy default is moved to the next free port,
+#                                  an explicit busy one is refused)
 #   ZOLLY_TELEGRAM_WEBHOOK_SECRET  Telegram's secret_token; generated when absent
 #   ZOLLY_FOUNDER          founder name, non-interactive
 #   ZOLLY_KIT_URL          tarball of this kit (piped only; default: GitHub main)
@@ -121,6 +123,10 @@ TG_API="${ZOLLY_TELEGRAM_API:-https://api.telegram.org}"
 TG_API=${TG_API%/}
 WEBHOOK_URL="${ZOLLY_TELEGRAM_WEBHOOK_URL:-}"
 WEBHOOK_BIND="${ZOLLY_TELEGRAM_WEBHOOK_BIND:-127.0.0.1:8080}"
+WEBHOOK_BIND_EXPLICIT=0
+if [ -n "${ZOLLY_TELEGRAM_WEBHOOK_BIND:-}" ]; then
+  WEBHOOK_BIND_EXPLICIT=1
+fi
 WEBHOOK_SECRET="${ZOLLY_TELEGRAM_WEBHOOK_SECRET:-}"
 WEBHOOK_STATE="poll"
 # Set once the transport is known: an explicit URL, or a URL key already in
@@ -308,7 +314,7 @@ while [ $# -gt 0 ]; do
     --no-mcp)       DO_MCP=0; shift ;;
     --no-telegram)  DO_TELEGRAM=0; shift ;;
     --webhook-url)  WEBHOOK_URL="${2:-}"; WEBHOOK_DECIDED=1; shift 2 ;;
-    --webhook-bind) WEBHOOK_BIND="${2:-}"; shift 2 ;;
+    --webhook-bind) WEBHOOK_BIND="${2:-}"; WEBHOOK_BIND_EXPLICIT=1; shift 2 ;;
     --webhook-secret) WEBHOOK_SECRET="${2:-}"; shift 2 ;;
     --yes|-y)       ASSUME_YES=1; shift ;;
     --force)        FORCE=1; shift ;;
@@ -915,21 +921,39 @@ validate_webhook_secret() {
   [ "${#1}" -le 256 ] || die "webhook secret is longer than 256 characters"
 }
 
-# bind_taken <host:port> — true when a listener already owns the port and it
-# is not this office's own running webhook service (a --force re-run restarts
-# that one, so it is not a conflict).
-bind_taken() {
-  webhook_bind="$1"
-  webhook_port="${webhook_bind##*:}"
+# port_listening <host:port> — any listener on the port.
+port_listening() {
+  listen_port="${1##*:}"
   if command -v ss >/dev/null 2>&1; then
-    [ -n "$(ss -ltnH "sport = :$webhook_port" 2>/dev/null)" ] || return 1
-  else
-    (exec 3<>"/dev/tcp/${webhook_bind%:*}/$webhook_port") 2>/dev/null || return 1
-    exec 3>&-
+    [ -n "$(ss -ltnH "sport = :$listen_port" 2>/dev/null)" ]
+    return
   fi
+  (exec 3<>"/dev/tcp/${1%:*}/$listen_port") 2>/dev/null && { exec 3>&-; return 0; }
+  return 1
+}
+
+# free_bind <host:port> — the next free port, at most 20 ahead.
+free_bind() {
+  free_host="${1%:*}"; free_port="${1##*:}"; free_tries=0
+  while [ "$free_tries" -lt 20 ]; do
+    free_port=$((free_port + 1))
+    [ "$free_port" -le 65535 ] || return 1
+    if ! port_listening "$free_host:$free_port"; then
+      printf '%s\n' "$free_host:$free_port"
+      return 0
+    fi
+    free_tries=$((free_tries + 1))
+  done
+  return 1
+}
+
+# bind_taken <host:port> — a listener that is not this office's own running
+# webhook service (a --force re-run restarts that one, so it is not a conflict).
+bind_taken() {
+  port_listening "$1" || return 1
   webhook_unit="$SERVICE_DIR/zolly@$FREQ.service"
   if [ -f "$webhook_unit" ] &&
-     grep -q -- "--bind $webhook_bind" "$webhook_unit" 2>/dev/null &&
+     grep -q -- "--bind $1" "$webhook_unit" 2>/dev/null &&
      systemctl --user is-active --quiet "zolly@$FREQ.service" 2>/dev/null; then
     return 1
   fi
@@ -972,6 +996,12 @@ if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -f "$CRED_FILE" ] &&
    grep -q '^ZOLLY_TELEGRAM_WEBHOOK_URL=' "$CRED_FILE" 2>/dev/null; then
   WEBHOOK_DECIDED=1
   WEBHOOK_URL=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_URL=//p' "$CRED_FILE")
+fi
+# The bind is remembered too: the proxy forwards to it, so a re-run must not
+# move back to 8080 merely because that port became free.
+if [ "$WEBHOOK_BIND_EXPLICIT" -eq 0 ] && [ -f "$CRED_FILE" ]; then
+  stored_bind=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_BIND=//p' "$CRED_FILE")
+  [ -z "$stored_bind" ] || WEBHOOK_BIND="$stored_bind"
 fi
 
 WANT_TELEGRAM=0
@@ -1027,12 +1057,17 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
       WEBHOOK_URL=$(tg_webhook_url "$TOKEN")
       [ -z "$WEBHOOK_URL" ] || note "webhook already registered: $WEBHOOK_URL"
     fi
+    # Pick a free local port before the prompt, so the hint names the real one.
+    # An explicit busy bind is only an error if a webhook is actually used.
+    if [ "$WEBHOOK_BIND_EXPLICIT" -eq 0 ] && bind_taken "$WEBHOOK_BIND"; then
+      webhook_next=$(free_bind "$WEBHOOK_BIND") ||
+        die "no free port after $WEBHOOK_BIND for the webhook listener"
+      note "bind $WEBHOOK_BIND busy — using $webhook_next"
+      WEBHOOK_BIND="$webhook_next"
+    fi
     if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -z "$WEBHOOK_URL" ] && can_ask; then
-      note "webhook: a public HTTPS URL that forwards to http://$WEBHOOK_BIND"
-      if bind_taken "$WEBHOOK_BIND"; then
-        warn "$WEBHOOK_BIND is already in use — webhook mode needs --webhook-bind 127.0.0.1:<free port>"
-      fi
-      note "no domain? blank = long-poll; or expose a tunnel (cloudflared, ngrok)"
+      note "webhook: public https URL → http://$WEBHOOK_BIND (blank = long-poll)"
+      note "no domain? use a tunnel: cloudflared tunnel --url http://$WEBHOOK_BIND"
       tries=0
       while [ "$tries" -lt 3 ]; do
         webhook_answer=$(ask_text "Webhook URL (https://…; blank = long-poll):")
@@ -1050,7 +1085,13 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
     if [ -n "$WEBHOOK_URL" ]; then
       validate_webhook_url "$WEBHOOK_URL"
       if bind_taken "$WEBHOOK_BIND"; then
-        die "webhook bind $WEBHOOK_BIND is already in use (llama-server?) — use --webhook-bind 127.0.0.1:<free port>, or leave the URL blank for long-poll"
+        if [ "$WEBHOOK_BIND_EXPLICIT" -eq 1 ]; then
+          die "webhook bind $WEBHOOK_BIND is busy — pick a free port with --webhook-bind"
+        fi
+        webhook_next=$(free_bind "$WEBHOOK_BIND") ||
+          die "no free port after $WEBHOOK_BIND for the webhook listener"
+        note "bind $WEBHOOK_BIND busy — using $webhook_next"
+        WEBHOOK_BIND="$webhook_next"
       fi
       [ -n "$WEBHOOK_SECRET" ] || WEBHOOK_SECRET=$(gen_webhook_secret)
       validate_webhook_secret "$WEBHOOK_SECRET"
@@ -1089,6 +1130,7 @@ ZOLLY_ALLOWED_IDS=$IDS
 ZOLLY_FOUNDER_USERNAME=$USERNAME
 ZOLLY_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET
 ZOLLY_TELEGRAM_WEBHOOK_URL=$WEBHOOK_URL
+ZOLLY_TELEGRAM_WEBHOOK_BIND=$WEBHOOK_BIND
 EOF
       chmod 600 "$tmp"
       mv -f "$tmp" "$CRED_FILE"

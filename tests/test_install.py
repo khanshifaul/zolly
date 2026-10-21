@@ -313,6 +313,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn(
             "ZOLLY_TELEGRAM_WEBHOOK_URL=https://office.example.com/tg\n", creds
         )
+        self.assertIn(f"ZOLLY_TELEGRAM_WEBHOOK_BIND={bind}\n", creds)
 
         # A re-run must keep the secret Telegram already has; rotating it here
         # would silently break every delivery.
@@ -359,7 +360,44 @@ class InstallTests(unittest.TestCase):
         finally:
             sock.close()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("already in use", result.stderr)
+        self.assertIn("is busy", result.stderr)
+
+    def test_busy_default_bind_moves_to_a_free_port(self):
+        import socket
+
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        # Make 8080 busy if it is not already (llama-server holds it here).
+        holder = socket.socket()
+        try:
+            holder.bind(("127.0.0.1", 8080))
+            holder.listen(1)
+        except OSError:
+            holder.close()
+            holder = None
+        try:
+            result = subprocess.run(
+                [
+                    str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes",
+                    "--founder", "Test",
+                    "--webhook-url", "https://office.example.com/tg",
+                ],
+                env=env, capture_output=True, text=True, timeout=60,
+                start_new_session=True,
+            )
+        finally:
+            if holder is not None:
+                holder.close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("busy — using", result.stdout)
+        creds = (
+            self.home / ".config" / "zolly" / "app" / "credentials"
+        ).read_text(encoding="utf-8")
+        bind_line = [
+            line for line in creds.splitlines()
+            if line.startswith("ZOLLY_TELEGRAM_WEBHOOK_BIND=")
+        ][0]
+        self.assertNotEqual(bind_line, "ZOLLY_TELEGRAM_WEBHOOK_BIND=127.0.0.1:8080")
 
     def test_webhook_url_must_be_https(self):
         repo = self.make_repo("app")
