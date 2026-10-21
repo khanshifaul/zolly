@@ -442,7 +442,7 @@ step "materialize office kit"
 
 AGENTS_DIR="$TARGET/.agents"
 if [ "$DRY_RUN" -eq 1 ]; then
-  say "would copy $TEMPLATE -> $AGENTS_DIR"
+  note "would copy $TEMPLATE -> $AGENTS_DIR"
 else
   BACKUP=""
   if [ -e "$AGENTS_DIR" ]; then
@@ -550,7 +550,7 @@ substitute() {
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  say "would substitute {{FREQUENCY}}=${FREQ} {{PROJECT_NAME}}=${PROJECT_NAME} {{BASE_BRANCH}}=${BASE_BRANCH} {{REMOTE}}=${REMOTE} {{FOUNDER}}=${FOUNDER:-<unset>}"
+  note "would substitute {{FREQUENCY}}=${FREQ} {{PROJECT_NAME}}=${PROJECT_NAME} {{BASE_BRANCH}}=${BASE_BRANCH} {{REMOTE}}=${REMOTE} {{FOUNDER}}=${FOUNDER:-<unset>}"
 else
   substitute
   ok "placeholders substituted"
@@ -590,7 +590,7 @@ fi
 # nobody reads is a comment.
 ROOT_CONTEXT="$TARGET/AGENTS.md"
 if [ "$DRY_RUN" -eq 1 ]; then
-  say "would write the @-token block into $ROOT_CONTEXT"
+  note "would write the @-token block into $ROOT_CONTEXT"
 else
   if [ -f "$ROOT_CONTEXT" ]; then
     # The file exists — do not touch a file the founder owns. But do check
@@ -602,12 +602,12 @@ else
     done
     if [ -n "$missing" ]; then
       warn "$ROOT_CONTEXT has no token for:$missing"
-      say "     the goal and those rulebooks will NOT be in context at session start."
+      say "    the goal and those rulebooks will NOT be in context at session start."
       if grep -qF '@.agents/memory/zolly-goal.md' "$ROOT_CONTEXT" 2>/dev/null; then
-        say "     note: it still imports @.agents/memory/zolly-goal.md; that file"
-        say "           was renamed to goal.md. Update the line."
+        say "    note: it still imports @.agents/memory/zolly-goal.md; that file"
+        say "          was renamed to goal.md. Update the line."
       fi
-      say "     Add the @-token lines — this installer will not edit your file."
+      say "    Add the @-token lines — this installer will not edit your file."
     else
       ok "$ROOT_CONTEXT already carries the goal and rulebook tokens"
     fi
@@ -773,10 +773,10 @@ else
     elif [ "$(ask_yn "Install the shared zolly binary now? (built from $TOOL_DIR)" y)" = n ]; then
       skip "binary (declined)"
     elif [ "$DRY_RUN" -eq 1 ]; then
-      say "would build $TOOL_DIR and install to $BIN_DEST"
+      note "would build $TOOL_DIR and install to $BIN_DEST"
       BIN_STATE="planned"
     else
-      say "building the tool (this takes a minute)..."
+      note "building the tool (this takes a minute)..."
       ( cd "$TOOL_DIR" && cargo build --release ) || die "cargo build failed in $TOOL_DIR"
       mkdir -p "$(dirname "$BIN_DEST")"
       install -m 0755 "$TOOL_DIR/target/release/zolly" "$BIN_DEST"
@@ -817,7 +817,7 @@ elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
   # The registration is per project, so it is ensured even when the binary is
   # current — a re-run is what upgrades an office installed before this file.
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "would write $MCP_PROJECT_FILE"
+    note "would write $MCP_PROJECT_FILE"
   else
     sh "$MCP_INSTALLER" "$MCP_DEST" --frequency "$FREQ" --root "$TARGET" --write "$TARGET" >/dev/null
     ok "MCP registered for this project: $MCP_PROJECT_FILE"
@@ -825,8 +825,8 @@ elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
 elif [ "$(ask_yn "Deploy zolly-mcp?" y)" = n ]; then
   skip "MCP (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
-  say "would deploy the MCP server to $MCP_DEST"
-  say "would write $MCP_PROJECT_FILE"
+  note "would deploy the MCP server to $MCP_DEST"
+  note "would write $MCP_PROJECT_FILE"
   MCP_STATE="planned"
 else
   # One deployer, not two. The component owns the entry's shape and merges it
@@ -979,7 +979,7 @@ else
     if [ -z "$IDS" ]; then
       IDS=$(tg_chat_ids "$TG_JSON")
       if [ -n "$IDS" ]; then
-        say "chat ids: $IDS"
+        note "chat ids: $IDS"
         [ "$(ask_yn "Use these ids?" y)" = y ] || IDS=""
       elif [ -n "$TOKEN" ]; then
         note "no chat id yet — send the bot a message, or paste the id below"
@@ -988,11 +988,11 @@ else
     [ -n "$IDS" ] || IDS=$(ask_text "Telegram user ids (comma separated):")
     if [ -n "$IDS" ] && [ -z "$USERNAME" ] && [ -n "$TG_JSON" ]; then
       USERNAME=$(tg_username "$TG_JSON" "${IDS%%,*}")
-      [ -z "$USERNAME" ] || say "handle: @$USERNAME"
+      [ -z "$USERNAME" ] || note "handle: @$USERNAME"
     fi
     if [ -n "$IDS" ] && [ -z "$USERNAME" ]; then
-      say "no @handle — group replies will not mention the founder"
-      say "  set ZOLLY_FOUNDER_USERNAME in $CRED_FILE to add one"
+      warn "no @handle — group replies will not mention the founder"
+      note "set ZOLLY_FOUNDER_USERNAME in $CRED_FILE to add one"
     fi
   fi
 fi
@@ -1004,7 +1004,7 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
     # re-run cannot silently downgrade the office back to long-polling.
     if [ -z "$WEBHOOK_URL" ] && [ -n "$TOKEN" ] && [ -f "$CRED_FILE" ]; then
       WEBHOOK_URL=$(tg_webhook_url "$TOKEN")
-      [ -z "$WEBHOOK_URL" ] || say "webhook already registered: $WEBHOOK_URL"
+      [ -z "$WEBHOOK_URL" ] || note "webhook already registered: $WEBHOOK_URL"
     fi
     if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -z "$WEBHOOK_URL" ] && can_ask; then
       note "webhook: a public HTTPS URL that forwards to http://$WEBHOOK_BIND"
@@ -1046,7 +1046,7 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
     TG_STATE="token-only"
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "would write $CRED_FILE"
+    note "would write $CRED_FILE"
   else
     # umask before mkdir: the directory must be 0700 from the start, not
     # however the caller's umask happened to leave it. Write the file
@@ -1099,7 +1099,7 @@ elif [ "$HAVE_CREDS" -ne 1 ]; then
 elif [ "$(ask_yn "Write the listener unit zolly@$FREQ.service?" y)" = n ]; then
   skip "systemd (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
-  say "would write $UNIT_FILE"
+  note "would write $UNIT_FILE"
 else
   mkdir -p "$SERVICE_DIR"
   if [ "$WEBHOOK_STATE" = "webhook" ]; then
@@ -1140,7 +1140,7 @@ fi
 step "done"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  say "dry run — nothing was changed"
+  note "dry run — nothing was changed"
   exit 0
 fi
 
