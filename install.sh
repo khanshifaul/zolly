@@ -990,11 +990,14 @@ WorkingDirectory=$TARGET
 WantedBy=default.target
 EOF
   ok "unit written: $UNIT_FILE"
-  SD_STATE="written"
-  say ""
-  say "To run it:"
-  say "  systemctl --user daemon-reload"
-  say "  systemctl --user enable --now zolly@$FREQ.service"
+  # Writing is not starting. The follow-up lives in Next steps so the whole
+  # install finishes before the founder is handed commands; a re-run on an
+  # already-running listener does not repeat them.
+  if systemctl --user is-active --quiet "zolly@$FREQ.service" 2>/dev/null; then
+    SD_STATE="active"
+  else
+    SD_STATE="written"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1014,7 +1017,7 @@ if [ "$COLOR" -eq 1 ]; then
   for _pair in "binary:$BIN_STATE" "MCP:$MCP_STATE" "Telegram:$TG_STATE" "systemd:$SD_STATE"; do
     _label=${_pair%%:*}; _value=${_pair#*:}
     case "$_value" in
-      installed|configured|written) _col=$C_OK ;;
+      installed|configured|written|active) _col=$C_OK ;;
       *) _col=$C_DIM ;;
     esac
     printf '  %s%s%s %s%s%s' "$C_DIM" "$_label" "$C_RESET" "$_col" "$_value" "$C_RESET"
@@ -1029,6 +1032,10 @@ heading "Next steps:"
 note "cd $TARGET"
 note "zolly doctor    # optional check"
 note "zolly           # manager + foreman + pr-reviewer"
+if [ "$SD_STATE" = "written" ]; then
+  note "systemctl --user daemon-reload"
+  note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
+fi
 if [ "$UNBORN" -eq 1 ]; then
   say ""
   note "no commits yet — commit before dispatching (branches cut from '$BASE_BRANCH')."
