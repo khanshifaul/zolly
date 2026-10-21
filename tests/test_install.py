@@ -146,6 +146,26 @@ class InstallTests(unittest.TestCase):
         self.assertIn("kept this entry across a reinstall", learnings)
         self.assertTrue(list(repo.glob(".agents-backup-*")), "no backup directory was kept")
 
+    def test_force_preserves_results_and_queue(self):
+        repo = self.make_repo("app")
+        self.assertEqual(self.install(repo).returncode, 0)
+        (repo / ".agents" / "results" / "t-keep.md").write_text(
+            "---\nstatus: done\n---\n", encoding="utf-8"
+        )
+        (repo / ".agents" / "queue" / "t-keep.md").write_text(
+            "a queued task\n", encoding="utf-8"
+        )
+        forced = self.install(repo, "--force")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertTrue(
+            (repo / ".agents" / "results" / "t-keep.md").is_file(),
+            "a reinstall must not drop finished work",
+        )
+        self.assertTrue(
+            (repo / ".agents" / "queue" / "t-keep.md").is_file(),
+            "a reinstall must not drop queued work",
+        )
+
     def test_empty_folder_without_git_is_refused(self):
         repo = self.root / "blank"
         repo.mkdir()
