@@ -68,6 +68,26 @@ herdr accepts only lowercase letters, digits, `-` and `_` in an **agent name**,
 so the frequency is joined with `-`. The pane label produced by the radio join
 reads `seat@frequency`; that `@` form is a display label, never an agent name.
 
+## Telegram replies — mention the founder in a group
+
+`zolly telegram-reply --chat-id <id> --text "<text>"` — or the `telegram_reply`
+tool, which takes the same two fields. How the text starts depends on the chat
+the inbound message came from:
+
+| Chat id | Chat | First line |
+|---|---|---|
+| positive | the founder's DM | no mention — the message already notifies them |
+| negative | group or supergroup | `@<handle>` — otherwise the founder is not notified among the members |
+
+The handle is `ZOLLY_FOUNDER_USERNAME` in
+`~/.config/zolly/{{FREQUENCY}}/credentials` — written by the installer from the
+bot's own updates, without the `@`. Read that one line; never read the token
+beside it into a reply, a log, or a brief.
+
+Empty key means the founder set no public username, so an `@`-mention cannot
+reach them. Reply without one and say so in the in-office brief — a group ping
+that never happened must not read as delivered.
+
 ## After each brief
 
 Run `.agents/prompts/post_task_reflect.md` — the procedure for deciding what

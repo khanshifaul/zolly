@@ -40,7 +40,12 @@
 #
 # Env:
 #   ZOLLY_TELEGRAM_TOKEN   bot token (prompted if absent and Telegram wanted)
-#   ZOLLY_ALLOWED_IDS      comma-separated founder chat ids (prompted if absent)
+#   ZOLLY_ALLOWED_IDS      comma-separated founder chat ids; when absent the
+#                          installer asks Telegram (getUpdates) for the chats
+#                          that have messaged the bot, then prompts as a fallback
+#   ZOLLY_FOUNDER_USERNAME founder's @handle, without the @ (discovered from the
+#                          same getUpdates call; empty when they have none)
+#   ZOLLY_TELEGRAM_API     Bot API base (default https://api.telegram.org)
 #   ZOLLY_FOUNDER          founder name, non-interactive
 #   ZOLLY_KIT_URL          tarball of this kit (piped only; default: GitHub main)
 #   ZOLLY_REF              branch or tag to fetch when piped (default: main)
@@ -105,6 +110,8 @@ FORCE=0
 DRY_RUN=0
 
 BIN_DEST="${ZOLLY_BIN_DEST:-$HOME/.local/bin/zolly}"
+TG_API="${ZOLLY_TELEGRAM_API:-https://api.telegram.org}"
+TG_API=${TG_API%/}
 CRED_ROOT="$HOME/.config/zolly"
 SERVICE_DIR="$HOME/.config/systemd/user"
 
@@ -790,8 +797,48 @@ step "credentials"
 CRED_DIR="$CRED_ROOT/$FREQ"
 CRED_FILE="$CRED_DIR/credentials"
 
+# tg_updates <token> — the raw getUpdates body, or nothing. The chat id is not
+# a second secret to collect: the token already reaches it, and so does the
+# founder's @username. getUpdates is a read — no offset is confirmed, so the
+# listener still sees every update afterwards. A failure (no network, a bad
+# token, a 409 from another listener) prints nothing and the caller prompts.
+tg_updates() {
+  _tg_url="$TG_API/bot$1/getUpdates"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --connect-timeout 5 --max-time 10 "$_tg_url" 2>/dev/null || :
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- --timeout=10 "$_tg_url" 2>/dev/null || :
+  fi
+}
+
+# tg_chat_ids <body> — the private-chat ids that have messaged this bot, comma
+# separated. Negative ids are group chats, and a group is not a person to
+# allow: only the private chats are offered.
+tg_chat_ids() {
+  printf '%s' "$1" |
+    tr -d '\n' |
+    grep -oE '"chat" *: *\{"id" *: *-?[0-9]+' |
+    sed -e 's/.*: *//' |
+    awk '!/^-/ && !seen[$0]++' |
+    paste -sd, -
+}
+
+# tg_username <body> <user-id> — the handle of that sender, without the @.
+# Empty when the sender set no public username. The `from` object is flat, so
+# it is matched up to its closing brace; a `}` inside a display name would cut
+# the match short and only cost the mention.
+tg_username() {
+  printf '%s' "$1" |
+    tr -d '\n' |
+    grep -oE '"from" *: *\{"id" *: *'"$2"',[^}]*"username" *: *"[A-Za-z0-9_]+"' |
+    sed -e 's/.*"username" *: *"//' -e 's/"$//' |
+    head -1
+}
+
 TOKEN="${ZOLLY_TELEGRAM_TOKEN:-}"
 IDS="${ZOLLY_ALLOWED_IDS:-}"
+USERNAME="${ZOLLY_FOUNDER_USERNAME:-}"
+USERNAME=${USERNAME#@}
 HAVE_CREDS=0
 TG_STATE="off"
 
@@ -799,11 +846,15 @@ TG_STATE="off"
 # binds a frequency to a project — so reuse them before asking. One bot token
 # per office: two listeners sharing a token both call getUpdates and Telegram
 # answers 409, so a second office needs its own bot.
-if [ -z "$TOKEN" ] || [ -z "$IDS" ]; then
+if [ -z "$TOKEN" ] || [ -z "$IDS" ] || [ -z "$USERNAME" ]; then
   if [ -f "$CRED_FILE" ]; then
     ok "credentials already exist: $CRED_FILE"
     [ -n "$TOKEN" ] || TOKEN=$(sed -n 's/^ZOLLY_TELEGRAM_TOKEN=//p' "$CRED_FILE")
     [ -n "$IDS" ] || IDS=$(sed -n 's/^ZOLLY_ALLOWED_IDS=//p' "$CRED_FILE")
+    if [ -z "$USERNAME" ]; then
+      USERNAME=$(sed -n 's/^ZOLLY_FOUNDER_USERNAME=//p' "$CRED_FILE")
+      USERNAME=${USERNAME#@}
+    fi
   fi
 fi
 
@@ -813,14 +864,41 @@ if [ "$DO_TELEGRAM" -eq 0 ]; then
 else
   if [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
     WANT_TELEGRAM=1
-  elif [ "$(ask_yn "Configure Telegram for this office? (each office needs its own bot token)" n)" = y ]; then
-    WANT_TELEGRAM=1
   else
-    skip "Telegram (declined) — add a token later at $CRED_FILE"
+    # A token alone is a configured office: the chat id is derived from it.
+    # With no token the default stays no, as it always was.
+    tg_default=n
+    [ -n "$TOKEN" ] && tg_default=y
+    if [ "$(ask_yn "Configure Telegram for this office? (each office needs its own bot token)" "$tg_default")" = y ]; then
+      WANT_TELEGRAM=1
+    else
+      skip "Telegram (declined) — add a token later at $CRED_FILE"
+    fi
   fi
   if [ "$WANT_TELEGRAM" -eq 1 ]; then
     [ -n "$TOKEN" ] || TOKEN=$(ask_secret "Telegram bot token for this office (from @BotFather; blank to skip):")
+    TG_JSON=""
+    if [ -n "$TOKEN" ] && { [ -z "$IDS" ] || [ -z "$USERNAME" ]; }; then
+      TG_JSON=$(tg_updates "$TOKEN")
+    fi
+    if [ -z "$IDS" ]; then
+      IDS=$(tg_chat_ids "$TG_JSON")
+      if [ -n "$IDS" ]; then
+        say "chat id(s) reported by this bot: $IDS"
+        [ "$(ask_yn "Use them as the allowed ids for this office?" y)" = y ] || IDS=""
+      elif [ -n "$TOKEN" ]; then
+        say "no chat id yet — send the bot a message once (e.g. 'hi') and the token reports it"
+      fi
+    fi
     [ -n "$IDS" ] || IDS=$(ask_text "Allowed Telegram user ids (comma separated; blank to skip):")
+    if [ -n "$IDS" ] && [ -z "$USERNAME" ] && [ -n "$TG_JSON" ]; then
+      USERNAME=$(tg_username "$TG_JSON" "${IDS%%,*}")
+      [ -z "$USERNAME" ] || say "founder handle reported by this bot: @$USERNAME"
+    fi
+    if [ -n "$IDS" ] && [ -z "$USERNAME" ]; then
+      say "no @username reported — group replies will not mention the founder"
+      say "  set ZOLLY_FOUNDER_USERNAME in $CRED_FILE to add one"
+    fi
   fi
 fi
 
@@ -841,6 +919,7 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
       cat > "$tmp" <<EOF
 ZOLLY_TELEGRAM_TOKEN=$TOKEN
 ZOLLY_ALLOWED_IDS=$IDS
+ZOLLY_FOUNDER_USERNAME=$USERNAME
 EOF
       chmod 600 "$tmp"
       mv -f "$tmp" "$CRED_FILE"

@@ -74,7 +74,7 @@ installer, no download.
 |---|---|
 | `~/.local/bin/zolly` | the shared binary, installed once |
 | `<project>/.agents/` | the office kit: rules, personas, memory, prompts, skills |
-| `~/.config/zolly/<freq>/credentials` | the Telegram token — machine-local, never in the repo |
+| `~/.config/zolly/<freq>/credentials` | the Telegram token, allowed ids and the founder's handle — machine-local, never in the repo |
 | `~/.config/systemd/user/zolly-<freq>.service` | the Telegram listener for that project |
 
 ## Isolation between offices
@@ -194,15 +194,23 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 | `--force` | install even if the target already has `.agents/` |
 | `--dry-run` | print what would happen, change nothing |
 
-Defaults per feature: binary **yes**, MCP **yes**, Telegram **no**, systemd
-**yes** when credentials exist. `--yes` therefore installs the office and the
-binary and leaves Telegram off unless `ZOLLY_TELEGRAM_TOKEN` and
-`ZOLLY_ALLOWED_IDS` are set. Pass `--founder` with `--yes` — `zolly doctor`
-fails on an office with no founder name.
+Defaults per feature: binary **yes**, MCP **yes**, Telegram **no** — or **yes**
+when `ZOLLY_TELEGRAM_TOKEN` is set — systemd **yes** when credentials exist.
+`--yes` therefore installs the office and the binary, and turns Telegram on
+only when a token is configured. The chat id is not a second thing to look up:
+the installer asks Telegram (`getUpdates`) for the chats that have messaged the
+bot and offers those ids, group chats excluded. `ZOLLY_ALLOWED_IDS` overrides
+the discovery; with no update yet (nobody has messaged the bot) the installer
+falls back to the prompt. `getUpdates` names every chat that has messaged the
+bot, so on a bot strangers can reach, set `ZOLLY_ALLOWED_IDS` explicitly rather
+than accepting the list. The same call records the founder's `@handle` as
+`ZOLLY_FOUNDER_USERNAME` — the manager prefixes a reply into a group with it,
+because only a mention notifies there; a DM already does. Pass `--founder` with
+`--yes` — `zolly doctor` fails on an office with no founder name.
 
-Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER`,
-`ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`,
-`ZOLLY_REF`.
+Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER_USERNAME`,
+`ZOLLY_TELEGRAM_API`, `ZOLLY_FOUNDER`, `ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`,
+`ZOLLY_MCP_DEST`, `ZOLLY_KIT_URL`, `ZOLLY_REF`.
 
 It refuses to run when the target is not a git repository, when the base
 branch does not exist, when the target already has `.agents/` (without

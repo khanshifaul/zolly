@@ -12,6 +12,7 @@ import pty
 import select
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -19,6 +20,54 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = ROOT / "install.sh"
+
+# A getUpdates body in the real shape: the same private chat twice (dedupe) and
+# a supergroup with a negative id (must not be allow-listed as a person).
+UPDATES = (
+    '{"ok":true,"result":['
+    '{"update_id":373388186,"message":{"message_id":64,'
+    '"from":{"id":5530013864,"is_bot":false,"first_name":"Shifaul",'
+    '"username":"khanshifaul"},"chat":{"id":5530013864,'
+    '"first_name":"Shifaul","type":"private"},"date":1792567855,"text":"hi"}},'
+    '{"update_id":373388187,"message":{"message_id":65,'
+    '"from":{"id":5530013864,"is_bot":false,"first_name":"Shifaul",'
+    '"username":"khanshifaul"},"chat":{"id":5530013864,'
+    '"first_name":"Shifaul","type":"private"},"date":1792567860,"text":"again"}},'
+    '{"update_id":373388188,"message":{"message_id":66,'
+    '"from":{"id":999,"is_bot":false,"first_name":"Other"},'
+    '"chat":{"id":-1001234567890,'
+    '"title":"group","type":"supergroup"},"date":1792567870,"text":"hi"}}'
+    "]}"
+)
+
+# Serves argv[1] on an ephemeral port and writes that port to argv[2]. A
+# process, not a thread: the pty tests fork, and a forked child must not
+# inherit a running server thread.
+STUB = """
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+body = open(sys.argv[1], "rb").read()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+tmp = sys.argv[2] + ".tmp"
+with open(tmp, "w") as f:
+    f.write(str(server.server_address[1]))
+os.replace(tmp, sys.argv[2])
+server.serve_forever()
+"""
 
 
 class InstallTests(unittest.TestCase):
@@ -28,6 +77,9 @@ class InstallTests(unittest.TestCase):
         self.home = self.root / "home"
         self.home.mkdir()
         self.env = dict(os.environ, HOME=str(self.home))
+        # Never reach api.telegram.org from a test: a closed local port fails
+        # the lookup in milliseconds, so the fallback prompt is deterministic.
+        self.env["ZOLLY_TELEGRAM_API"] = "http://127.0.0.1:1"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -204,6 +256,74 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(
             (self.home / ".config" / "systemd" / "user" / "zolly@app.service").exists()
         )
+
+    def start_updates_stub(self):
+        """Serve UPDATES from a child process; return its base URL."""
+        body = self.root / "updates.json"
+        body.write_text(UPDATES, encoding="utf-8")
+        script = self.root / "stub_updates.py"
+        script.write_text(STUB, encoding="utf-8")
+        port_file = self.root / "stub_port"
+        proc = subprocess.Popen([sys.executable, str(script), str(body), str(port_file)])
+        self.addCleanup(proc.wait, 5)
+        self.addCleanup(proc.terminate)
+        deadline = time.time() + 5
+        while not port_file.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(port_file.exists(), "the getUpdates stub did not start")
+        return "http://127.0.0.1:%s" % port_file.read_text(encoding="utf-8").strip()
+
+    def test_chat_id_is_derived_from_the_token(self):
+        # The token already reaches getUpdates, which names the chat. With no
+        # ZOLLY_ALLOWED_IDS the installer must ask Telegram, not the founder.
+        repo = self.make_repo("app")
+        self.env["ZOLLY_TELEGRAM_API"] = self.start_updates_stub()
+        self.env["ZOLLY_TELEGRAM_TOKEN"] = "123456:ABCdef"
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes", "--founder", "Test"],
+            env=self.env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("chat id(s) reported by this bot: 5530013864", result.stdout)
+        self.assertIn("founder handle reported by this bot: @khanshifaul", result.stdout)
+        creds = (self.home / ".config" / "zolly" / "app" / "credentials").read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_ALLOWED_IDS=5530013864\n", creds)
+        self.assertIn("ZOLLY_FOUNDER_USERNAME=khanshifaul\n", creds)
+
+    def test_discovered_chat_id_is_confirmed_interactively(self):
+        repo = self.make_repo("app")
+        self.env["ZOLLY_TELEGRAM_API"] = self.start_updates_stub()
+        self.env["ZOLLY_TELEGRAM_TOKEN"] = "123456:ABCdef"
+        # MCP no, Telegram yes (the token makes the default yes), ids yes.
+        code, text = self.run_in_pty(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            b"n\ny\ny\n",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertIn("[Y/n]", text)
+        self.assertIn("Use them as the allowed ids for this office?", text)
+        creds = (self.home / ".config" / "zolly" / "app" / "credentials").read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_ALLOWED_IDS=5530013864\n", creds)
+        self.assertIn("ZOLLY_FOUNDER_USERNAME=khanshifaul\n", creds)
+        self.assertNotIn("-1001234567890", creds)
+
+    def test_explicit_founder_handle_wins_and_loses_the_at(self):
+        repo = self.make_repo("app")
+        env = dict(
+            self.env,
+            ZOLLY_TELEGRAM_TOKEN="dummy",
+            ZOLLY_ALLOWED_IDS="1",
+            ZOLLY_FOUNDER_USERNAME="@khanshifaul",
+        )
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes", "--founder", "Test"],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        creds = (self.home / ".config" / "zolly" / "app" / "credentials").read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_FOUNDER_USERNAME=khanshifaul\n", creds)
 
     def test_yes_installs_with_defaults_and_asks_nothing(self):
         repo = self.make_repo("app")
