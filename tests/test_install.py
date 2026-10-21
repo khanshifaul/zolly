@@ -155,6 +155,9 @@ class InstallTests(unittest.TestCase):
         (repo / ".agents" / "queue" / "t-keep.md").write_text(
             "a queued task\n", encoding="utf-8"
         )
+        (repo / ".agents" / "days" / "2026-10-21.json").write_text(
+            "{}", encoding="utf-8"
+        )
         forced = self.install(repo, "--force")
         self.assertEqual(forced.returncode, 0, forced.stderr)
         self.assertTrue(
@@ -164,6 +167,10 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(
             (repo / ".agents" / "queue" / "t-keep.md").is_file(),
             "a reinstall must not drop queued work",
+        )
+        self.assertTrue(
+            (repo / ".agents" / "days" / "2026-10-21.json").is_file(),
+            "a reinstall must not drop the day records",
         )
 
     def test_binary_source_is_found_in_the_kit(self):

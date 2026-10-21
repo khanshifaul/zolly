@@ -472,10 +472,11 @@ else
     [ -f "$BACKUP/rules/project.md" ] && cp "$BACKUP/rules/project.md" "$AGENTS_DIR/rules/project.md"
     find "$BACKUP/hr" -maxdepth 1 -type f \( -name '*.md' -o -name '*.hired' \) -exec cp {} "$AGENTS_DIR/hr/" \; 2>/dev/null || true
     find "$BACKUP/worker" -maxdepth 1 -type f -name '*.md' ! -name 'generic.md' -exec cp {} "$AGENTS_DIR/worker/" \; 2>/dev/null || true
-    # Work in flight and work finished are not template files. A reinstall that
-    # dropped them silently destroyed 106 results and 33 tracked files on
-    # 2026-10-21: the backup had them, the restore list did not name them.
-    for d in results queue; do
+    # Work in flight, work finished and the day/event records are not template
+    # files. A reinstall that dropped them silently destroyed 106 results and
+    # 33 tracked files on 2026-10-21; the backup had them, the restore list
+    # did not name them.
+    for d in results queue days events inbox trash; do
       [ -d "$BACKUP/$d" ] || continue
       mkdir -p "$AGENTS_DIR/$d"
       ( cd "$BACKUP/$d" && tar -cf - . ) | ( cd "$AGENTS_DIR/$d" && tar -xf - )
