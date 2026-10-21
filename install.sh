@@ -480,6 +480,27 @@ else
       mkdir -p "$AGENTS_DIR/$d"
       ( cd "$BACKUP/$d" && tar -cf - . ) | ( cd "$AGENTS_DIR/$d" && tar -xf - )
     done
+    # Office-local extras the template does not ship. Losing them to --force
+    # cost zylosync its GitNexus skills and eight helper scripts on
+    # 2026-10-21 — the same failure as the results above, one directory up.
+    extras=0
+    if [ -d "$BACKUP/skills" ]; then
+      mkdir -p "$AGENTS_DIR/skills"
+      ( cd "$BACKUP/skills" && tar -cf - . ) | ( cd "$AGENTS_DIR/skills" && tar -xf - )
+      extras=1
+    fi
+    for f in "$BACKUP"/*; do
+      [ -f "$f" ] || continue
+      name=$(basename "$f")
+      case "$name" in
+        AGENTS.md|nudge.stamp|LAST_PROMPT.md|STATE.md|day.json|*.pid) continue ;;
+      esac
+      if [ ! -e "$AGENTS_DIR/$name" ]; then
+        cp "$f" "$AGENTS_DIR/$name"
+        extras=1
+      fi
+    done
+    [ "$extras" -eq 0 ] || ok "restored office-local skills and helpers"
     ok "restored memory, hires, worker personas and project.md"
     # A project that keeps the Rust tool source under .agents/zolly/tool (the
     # factory checkout) must not lose it to --force: it is not part of the

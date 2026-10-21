@@ -333,6 +333,19 @@ class InstallTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must start with https", result.stderr)
 
+    def test_force_preserves_custom_skills_and_root_files(self):
+        repo = self.make_repo("app")
+        self.assertEqual(self.install(repo).returncode, 0)
+        skill = repo / ".agents" / "skills" / "custom" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("custom skill\n", encoding="utf-8")
+        helper = repo / ".agents" / "helper.py"
+        helper.write_text("print(1)\n", encoding="utf-8")
+        forced = self.install(repo, "--force")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertTrue(skill.is_file(), "a reinstall must not drop office skills")
+        self.assertTrue(helper.is_file(), "a reinstall must not drop office helpers")
+
     def test_force_preserves_a_project_local_tool_source(self):
         repo = self.make_repo("app")
         self.assertEqual(self.install(repo).returncode, 0)
