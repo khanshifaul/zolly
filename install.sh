@@ -376,9 +376,8 @@ if [ "$UNBORN" -eq 1 ]; then
     HEAD_BRANCH="$BASE_BRANCH"
   fi
   if [ "$HEAD_BRANCH" != "$BASE_BRANCH" ]; then
-    note "no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
+    BASE_BRANCH="$HEAD_BRANCH"
   fi
-  BASE_BRANCH="$HEAD_BRANCH"
   ok "branch: $BASE_BRANCH (no commits yet)"
 else
   # Commits exist. With no --base-branch, use the branch the repo is on.
@@ -386,7 +385,7 @@ else
     HEAD_BRANCH=$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     if [ -n "$HEAD_BRANCH" ] && [ "$HEAD_BRANCH" != "$BASE_BRANCH" ] \
        && ! git -C "$TARGET" rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
-      note "no '$BASE_BRANCH'; using the current branch '$HEAD_BRANCH'"
+      note "using the current branch '$HEAD_BRANCH'"
       BASE_BRANCH="$HEAD_BRANCH"
     fi
   fi
@@ -400,7 +399,7 @@ fi
 if git -C "$TARGET" rev-parse --verify --quiet "$REMOTE/$BASE_BRANCH" >/dev/null 2>&1; then
   ok "remote ref: $REMOTE/$BASE_BRANCH"
 else
-  warn "no remote ref '$REMOTE/$BASE_BRANCH' — the office will merge locally only"
+  warn "no $REMOTE/$BASE_BRANCH — local merges only"
 fi
 
 # ---------------------------------------------------------------------------
@@ -436,7 +435,7 @@ ok "frequency: $FREQ"
 ok "project:   $PROJECT_NAME"
 
 if [ -z "$FOUNDER" ]; then
-  FOUNDER=$(ask_text "Founder name (the office greets them by it; blank for an office with no Telegram):")
+  FOUNDER=$(ask_text "Founder name:")
 fi
 [ -n "$FOUNDER" ] || warn "no founder name — the office runs without Telegram greetings"
 
@@ -894,14 +893,14 @@ else
     # With no token the default stays no, as it always was.
     tg_default=n
     [ -n "$TOKEN" ] && tg_default=y
-    if [ "$(ask_yn "Configure Telegram for this office? (each office needs its own bot token)" "$tg_default")" = y ]; then
+    if [ "$(ask_yn "Configure Telegram? (one bot per office)" "$tg_default")" = y ]; then
       WANT_TELEGRAM=1
     else
-      skip "Telegram (declined) — add a token later at $CRED_FILE"
+      skip "Telegram (declined)"
     fi
   fi
   if [ "$WANT_TELEGRAM" -eq 1 ]; then
-    [ -n "$TOKEN" ] || TOKEN=$(ask_secret "Telegram bot token for this office (from @BotFather; blank to skip):")
+    [ -n "$TOKEN" ] || TOKEN=$(ask_secret "Telegram bot token (blank to skip):")
     TG_JSON=""
     if [ -n "$TOKEN" ] && { [ -z "$IDS" ] || [ -z "$USERNAME" ]; }; then
       TG_JSON=$(tg_updates "$TOKEN")
@@ -909,19 +908,19 @@ else
     if [ -z "$IDS" ]; then
       IDS=$(tg_chat_ids "$TG_JSON")
       if [ -n "$IDS" ]; then
-        say "chat id(s) reported by this bot: $IDS"
-        [ "$(ask_yn "Use them as the allowed ids for this office?" y)" = y ] || IDS=""
+        say "chat ids: $IDS"
+        [ "$(ask_yn "Use these ids?" y)" = y ] || IDS=""
       elif [ -n "$TOKEN" ]; then
-        say "no chat id yet — send the bot a message once (e.g. 'hi') and the token reports it"
+        say "no chat id yet — message the bot once, then re-run"
       fi
     fi
-    [ -n "$IDS" ] || IDS=$(ask_text "Allowed Telegram user ids (comma separated; blank to skip):")
+    [ -n "$IDS" ] || IDS=$(ask_text "Telegram user ids (comma separated):")
     if [ -n "$IDS" ] && [ -z "$USERNAME" ] && [ -n "$TG_JSON" ]; then
       USERNAME=$(tg_username "$TG_JSON" "${IDS%%,*}")
-      [ -z "$USERNAME" ] || say "founder handle reported by this bot: @$USERNAME"
+      [ -z "$USERNAME" ] || say "handle: @$USERNAME"
     fi
     if [ -n "$IDS" ] && [ -z "$USERNAME" ]; then
-      say "no @username reported — group replies will not mention the founder"
+      say "no @handle — group replies will not mention the founder"
       say "  set ZOLLY_FOUNDER_USERNAME in $CRED_FILE to add one"
     fi
   fi
@@ -961,7 +960,7 @@ EOF
     if [ "$HAVE_CREDS" -eq 1 ]; then
       ok "credentials written: $CRED_FILE"
     else
-      skip "Telegram listener (token saved, no chat id yet) — message the bot, then re-run --force"
+      skip "token saved — no chat id yet; message the bot, then re-run --force"
     fi
   fi
 elif [ "$WANT_TELEGRAM" -eq 1 ]; then
@@ -982,8 +981,8 @@ elif [ "$DO_TELEGRAM" -eq 0 ]; then
 elif [ "$HAVE_CREDS" -ne 1 ]; then
   # A listener with no token would restart-loop. Do not create a unit that
   # cannot work; tell the user how to get one after adding credentials.
-  skip "systemd (no Telegram credentials) — add a token to $CRED_FILE, then re-run with --force"
-elif [ "$(ask_yn "Write the systemd user unit zolly@$FREQ.service for this office?" y)" = n ]; then
+  skip "systemd (no Telegram credentials)"
+elif [ "$(ask_yn "Write the listener unit zolly@$FREQ.service?" y)" = n ]; then
   skip "systemd (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would write $UNIT_FILE"
