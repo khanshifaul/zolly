@@ -1059,14 +1059,6 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
       WEBHOOK_URL=$(tg_webhook_url "$TOKEN")
       [ -z "$WEBHOOK_URL" ] || note "webhook already registered: $WEBHOOK_URL"
     fi
-    # Pick a free local port before the prompt, so the hint names the real one.
-    # An explicit busy bind is only an error if a webhook is actually used.
-    if [ "$WEBHOOK_BIND_EXPLICIT" -eq 0 ] && bind_taken "$WEBHOOK_BIND"; then
-      webhook_next=$(free_bind "$WEBHOOK_BIND") ||
-        die "no free port after $WEBHOOK_BIND for the webhook listener"
-      note "bind $WEBHOOK_BIND busy — using $webhook_next"
-      WEBHOOK_BIND="$webhook_next"
-    fi
     if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -z "$WEBHOOK_URL" ] && can_ask; then
       note "webhook: public https URL → http://$WEBHOOK_BIND (blank = long-poll)"
       note "no domain? use a tunnel: cloudflared tunnel --url http://$WEBHOOK_BIND"

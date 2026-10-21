@@ -395,6 +395,37 @@ class InstallTests(unittest.TestCase):
             result.stdout.index("telegram-set-webhook --url"),
         )
 
+    def test_poll_does_not_move_a_busy_default_bind(self):
+        import socket
+
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        holder = socket.socket()
+        try:
+            holder.bind(("127.0.0.1", 8080))
+            holder.listen(1)
+        except OSError:
+            holder.close()
+            holder = None
+        try:
+            result = subprocess.run(
+                [
+                    str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes",
+                    "--founder", "Test",
+                ],
+                env=env, capture_output=True, text=True, timeout=60,
+                start_new_session=True,
+            )
+        finally:
+            if holder is not None:
+                holder.close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("busy — using", result.stdout)
+        creds = (
+            self.home / ".config" / "zolly" / "app" / "credentials"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_TELEGRAM_WEBHOOK_BIND=127.0.0.1:8080\n", creds)
+
     def test_busy_default_bind_moves_to_a_free_port(self):
         import socket
 
