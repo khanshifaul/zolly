@@ -274,6 +274,10 @@ class InstallTests(unittest.TestCase):
         )
         self.assertIn("telegram-serve\n", unit)
         self.assertNotIn("--webhook", unit)
+        # The poll choice is recorded so a re-run does not ask for a webhook
+        # URL again (and an empty value is a valid, remembered answer).
+        creds = cred_file.read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_TELEGRAM_WEBHOOK_URL=\n", creds)
 
     def test_webhook_mode_wires_url_and_secret(self):
         repo = self.make_repo("app")
@@ -304,6 +308,9 @@ class InstallTests(unittest.TestCase):
             "telegram-set-webhook --url https://office.example.com/tg", result.stdout
         )
         self.assertIn("point the TLS proxy", result.stdout)
+        self.assertIn(
+            "ZOLLY_TELEGRAM_WEBHOOK_URL=https://office.example.com/tg\n", creds
+        )
 
         # A re-run must keep the secret Telegram already has; rotating it here
         # would silently break every delivery.
@@ -339,6 +346,40 @@ class InstallTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must start with https", result.stderr)
+
+    def test_invalid_webhook_url_reprompts_instead_of_aborting(self):
+        repo = self.make_repo("app")
+        # MCP no, Telegram yes, token, ids, a bad URL, then blank for poll.
+        code, text = self.run_in_pty(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            b"n\ny\n123456:ABCdef\n1,2\nhttp://x\n\n",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertIn("must start with https", text)
+        creds = (
+            self.home / ".config" / "zolly" / "app" / "credentials"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_TELEGRAM_WEBHOOK_URL=\n", creds)
+        self.assertFalse(
+            (self.home / ".config" / "systemd" / "user" / "zolly@app.service").exists()
+        )
+
+    def test_poll_choice_is_not_asked_again(self):
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="dummy", ZOLLY_ALLOWED_IDS="1")
+        first = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--yes", "--founder", "Test"],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        # A re-run must read the remembered poll choice, not prompt again.
+        code, text = self.run_in_pty(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--force"],
+            b"",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("Webhook URL", text)
 
     def test_force_preserves_custom_skills_and_root_files(self):
         repo = self.make_repo("app")

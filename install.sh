@@ -47,7 +47,9 @@
 #                          same getUpdates call; empty when they have none)
 #   ZOLLY_TELEGRAM_API     Bot API base (default https://api.telegram.org)
 #   ZOLLY_TELEGRAM_WEBHOOK_URL     public https URL Telegram delivers to;
-#                                  blank keeps long-polling
+#                                  blank keeps long-polling. Written to
+#                                  credentials too: an empty stored value means
+#                                  the office chose long-poll
 #   ZOLLY_TELEGRAM_WEBHOOK_BIND    local bind for the webhook listener
 #                                  (default 127.0.0.1:8080, behind a TLS proxy)
 #   ZOLLY_TELEGRAM_WEBHOOK_SECRET  Telegram's secret_token; generated when absent
@@ -121,6 +123,12 @@ WEBHOOK_URL="${ZOLLY_TELEGRAM_WEBHOOK_URL:-}"
 WEBHOOK_BIND="${ZOLLY_TELEGRAM_WEBHOOK_BIND:-127.0.0.1:8080}"
 WEBHOOK_SECRET="${ZOLLY_TELEGRAM_WEBHOOK_SECRET:-}"
 WEBHOOK_STATE="poll"
+# Set once the transport is known: an explicit URL, or a URL key already in
+# credentials (empty value = long-poll). A re-run must not ask again.
+WEBHOOK_DECIDED=0
+if [ -n "$WEBHOOK_URL" ]; then
+  WEBHOOK_DECIDED=1
+fi
 CRED_ROOT="$HOME/.config/zolly"
 SERVICE_DIR="$HOME/.config/systemd/user"
 
@@ -299,7 +307,7 @@ while [ $# -gt 0 ]; do
     --no-binary)    DO_BINARY=0; shift ;;
     --no-mcp)       DO_MCP=0; shift ;;
     --no-telegram)  DO_TELEGRAM=0; shift ;;
-    --webhook-url)  WEBHOOK_URL="${2:-}"; shift 2 ;;
+    --webhook-url)  WEBHOOK_URL="${2:-}"; WEBHOOK_DECIDED=1; shift 2 ;;
     --webhook-bind) WEBHOOK_BIND="${2:-}"; shift 2 ;;
     --webhook-secret) WEBHOOK_SECRET="${2:-}"; shift 2 ;;
     --yes|-y)       ASSUME_YES=1; shift ;;
@@ -937,6 +945,14 @@ fi
 if [ -z "$WEBHOOK_SECRET" ] && [ -f "$CRED_FILE" ]; then
   WEBHOOK_SECRET=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_SECRET=//p' "$CRED_FILE")
 fi
+# The transport choice is independent too. A present key with an empty value
+# records the founder's "long-poll" answer; without it every re-run asked for
+# a webhook URL again, and a typo there aborted the whole install.
+if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -f "$CRED_FILE" ] &&
+   grep -q '^ZOLLY_TELEGRAM_WEBHOOK_URL=' "$CRED_FILE" 2>/dev/null; then
+  WEBHOOK_DECIDED=1
+  WEBHOOK_URL=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_URL=//p' "$CRED_FILE")
+fi
 
 WANT_TELEGRAM=0
 if [ "$DO_TELEGRAM" -eq 0 ]; then
@@ -991,8 +1007,22 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
       WEBHOOK_URL=$(tg_webhook_url "$TOKEN")
       [ -z "$WEBHOOK_URL" ] || say "webhook already registered: $WEBHOOK_URL"
     fi
-    if [ -z "$WEBHOOK_URL" ] && can_ask; then
-      WEBHOOK_URL=$(ask_text "Webhook URL (blank = long-poll):")
+    if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -z "$WEBHOOK_URL" ] && can_ask; then
+      note "webhook: a public HTTPS URL that forwards to http://$WEBHOOK_BIND"
+      note "no domain? blank = long-poll; or expose a tunnel (cloudflared, ngrok)"
+      tries=0
+      while [ "$tries" -lt 3 ]; do
+        webhook_answer=$(ask_text "Webhook URL (https://…; blank = long-poll):")
+        [ -z "$webhook_answer" ] && break
+        case "$webhook_answer" in
+          https://?*) WEBHOOK_URL="$webhook_answer"; break ;;
+          *) warn "must start with https:// — e.g. https://office.example.com/telegram" ;;
+        esac
+        tries=$((tries + 1))
+      done
+      if [ -z "$WEBHOOK_URL" ] && [ "$tries" -ge 3 ]; then
+        warn "no valid URL after 3 tries — keeping long-poll"
+      fi
     fi
     if [ -n "$WEBHOOK_URL" ]; then
       validate_webhook_url "$WEBHOOK_URL"
@@ -1032,6 +1062,7 @@ ZOLLY_TELEGRAM_TOKEN=$TOKEN
 ZOLLY_ALLOWED_IDS=$IDS
 ZOLLY_FOUNDER_USERNAME=$USERNAME
 ZOLLY_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET
+ZOLLY_TELEGRAM_WEBHOOK_URL=$WEBHOOK_URL
 EOF
       chmod 600 "$tmp"
       mv -f "$tmp" "$CRED_FILE"
