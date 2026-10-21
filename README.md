@@ -255,6 +255,11 @@ then starts `omp` with the manager persona (`@.agents/zolly/agent.md`).
 `zolly init` still exists to re-open a seat that was closed. `zolly <command>`
 runs the CLI, and bare `zolly` outside an office says so instead of seating.
 
+**Optional code graph.** Set `gitnexus: on` in `.agents/rules/project.md` after
+`node .gitnexus/run.cjs analyze`. `zolly doctor` then fails when the index
+predates HEAD, and `rules/workflows.md` tells foreman, worker and reviewer
+which queries to use. Zolly never requires GitNexus; the office works without it.
+
 The installer no longer prints a shell block for `~/.zshrc`: the seat lives in
 the binary, so it works in any shell, in a script, and in a fresh terminal.
 

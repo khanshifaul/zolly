@@ -95,6 +95,23 @@ Run `zolly verify <task-id>` before the verdict: it runs the project's
 exit code and tail. A non-zero exit is an objection. If it refuses (no
 `test-command` in `project.md`), say so — an unverified result does not merge.
 
+## Code graph (optional)
+
+Only when `rules/project.md` says `gitnexus: on`:
+
+- **foreman:** `impact <symbol> --direction upstream` for a LARGE scope;
+  `context` and `processes` for the plan. The graph is evidence, not a verdict.
+- **worker:** `detect-changes --scope all` before writing the result;
+  `trace`/`context` while editing. Cite the symbol or route you checked.
+- **reviewer:** read the worker's graph diff; run
+  `detect-changes --scope compare --base-ref <base>` yourself when it is
+  missing. `api_impact`/`shape_check` for route changes.
+
+The index is derived and machine-local. `zolly doctor` fails when it predates
+HEAD; uncommitted work needs `node .gitnexus/run.cjs analyze` before you trust
+graph results for it. A missing finding is not proof of safety — the PDG/taint
+layers model what they model.
+
 ## Settling
 
 Settling records the outcome and releases the slot. On a reviewer objection it

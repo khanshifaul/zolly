@@ -74,3 +74,11 @@ Project wiring the office reads from `.agents/zolly/config.toml`:
 - frequency: `{{FREQUENCY}}`
 - base branch: `{{BASE_BRANCH}}`
 - remote: `{{REMOTE}}`
+
+## Optional tooling
+
+gitnexus: off
+
+Set that to `on` after `node .gitnexus/run.cjs analyze`. `zolly doctor` then
+fails when the index no longer matches HEAD, and the workflow tells foreman,
+worker and reviewer which graph queries to use. Zolly never requires it.

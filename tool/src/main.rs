@@ -394,6 +394,31 @@ fn write_boot_state(
         }
         out.push_str(&format!("next: {}\n", brief.next_action));
     }
+
+    // The full store stays on disk: injecting 14KB every seat costs more than
+    // the reads it replaces. Carry the working set (current.md) and a pointer
+    // with counts, so the agent knows what exists and where to look.
+    let memory = root.join(".agents/memory");
+    let current = std::fs::read_to_string(memory.join("current.md")).unwrap_or_default();
+    let current_entries: Vec<&str> = current
+        .lines()
+        .skip_while(|line| !line.starts_with("## C-"))
+        .collect();
+    if !current_entries.is_empty() {
+        out.push_str("\n## memory — current\n");
+        out.push_str(&current_entries.join("\n"));
+        out.push('\n');
+    }
+    let count = |file: &str, prefix: &str| {
+        std::fs::read_to_string(memory.join(file))
+            .map(|text| text.lines().filter(|line| line.starts_with(prefix)).count())
+            .unwrap_or(0)
+    };
+    out.push_str(&format!(
+        "memory: {} decisions · {} learnings — `.agents/shared/memory read` / `search <terms>`\n",
+        count("decisions.md", "## D-"),
+        count("learnings.md", "## L-")
+    ));
     out.push_str(&format!(
         "doctor: {}\n",
         if failing.is_empty() {
@@ -589,8 +614,9 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
 }
 
 /// One seat, one linear path: label the tab, join the bus while the pane is a
-/// shell, start the agent, deliver the persona. Errors are the caller's to
-/// collect — a failed foreman must not stop the reviewer.
+/// shell, then start the agent with its boot prompt and persona as launch
+/// arguments. Passing them at launch (measured 3.0s per seat) beats starting
+/// omp empty and then prompting it (the turn-start wait cost ~6s more).
 fn open_seat(
     herdr: &herdr::HerdrClient,
     office: &Office,
@@ -600,20 +626,34 @@ fn open_seat(
     persona: &str,
     workspace: &str,
 ) -> Result<()> {
+    let persona_path = office.agent_md(persona);
+    if !persona_path.is_file() {
+        anyhow::bail!("missing persona at {}", persona_path.display());
+    }
+    let boot_path = match persona {
+        "foreman" => office.root.join(".agents/foreman/boot/foreman.md"),
+        _ => office.root.join(".agents/foreman/boot/pr-reviewer.md"),
+    };
+    let mut launch: Vec<String> = Vec::new();
+    if boot_path.is_file() {
+        launch.push(format!("@{}", boot_path.display()));
+    }
+    launch.push(format!("@{}", persona_path.display()));
+
     let pane = herdr
-        .agent_start_with_retry(name, label, "omp", &office.root_str(), Some(workspace), |pane| {
-            radio_join(handle, pane, &seat_role(handle, office), &office.frequency)
-        })
+        .agent_start_with_retry(
+            name,
+            label,
+            "omp",
+            &office.root_str(),
+            Some(workspace),
+            &launch,
+            |pane| radio_join(handle, pane, &seat_role(handle, office), &office.frequency),
+        )
         .with_context(|| format!("Failed to start {name}"))?;
     if let Some(tab) = herdr.tab_id_for_pane(&pane) {
         let _ = herdr.tab_rename(&tab, label);
     }
-    let path = office.agent_md(persona);
-    let prompt = std::fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    herdr
-        .agent_prompt_started(name, &prompt, 30_000)
-        .with_context(|| format!("Failed to prompt {name}"))?;
     Ok(())
 }
 
@@ -1831,6 +1871,22 @@ fn stamp(t: std::time::SystemTime) -> String {
         .to_string()
 }
 
+/// A `key: value` line from `.agents/rules/project.md`. The first match wins;
+/// keys are compared case-insensitively after trimming.
+fn project_setting(root: &std::path::Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(".agents/rules/project.md")).ok()?;
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(key)
+            .then(|| value.trim().trim_matches('"').to_string())
+    })
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.trim().chars().take(7).collect()
+}
+
 /// Self-check. Fails loudly on the recurring failure classes: a stale
 /// binary, dead commands, broken skill symlinks, token-source drift, a bad
 /// systemd unit. Exit code 0 = healthy; 1 = at least one check failed.
@@ -1890,6 +1946,59 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
             detail: ".agents/zolly/config.toml is missing".into(),
         });
     }
+    // Optional code graph. Only projects that opt in pay for the check; the
+    // index is derived and machine-local, so freshness is the failure that
+    // matters — a stale graph is worse than no graph.
+    if project_setting(root, "gitnexus")
+        .map(|value| value.eq_ignore_ascii_case("on"))
+        .unwrap_or(false)
+    {
+        let meta = root.join(".gitnexus/meta.json");
+        let head = git_out(root, &["rev-parse", "HEAD"]).unwrap_or_default();
+        let indexed = std::fs::read_to_string(&meta)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| {
+                value
+                    .get("lastCommit")
+                    .and_then(|commit| commit.as_str())
+                    .map(str::to_string)
+            });
+        match indexed {
+            Some(commit) if commit.trim() == head.trim() => {
+                let dirty = git_out(root, &["status", "--porcelain"])
+                    .map(|status| !status.trim().is_empty())
+                    .unwrap_or(false);
+                checks.push(Check {
+                    name: "gitnexus",
+                    ok: true,
+                    detail: if dirty {
+                        format!(
+                            "index matches HEAD ({}) — uncommitted changes are not indexed",
+                            short_sha(&head)
+                        )
+                    } else {
+                        format!("index matches HEAD ({})", short_sha(&head))
+                    },
+                });
+            }
+            Some(commit) => checks.push(Check {
+                name: "gitnexus",
+                ok: false,
+                detail: format!(
+                    "stale index: indexed {} / HEAD {} — run `node .gitnexus/run.cjs analyze`",
+                    short_sha(&commit),
+                    short_sha(&head)
+                ),
+            }),
+            None => checks.push(Check {
+                name: "gitnexus",
+                ok: false,
+                detail: "gitnexus: on but no index — run `node .gitnexus/run.cjs analyze`".into(),
+            }),
+        }
+    }
+
     // wrote into it (result files, tool source edits, stray stamps). That is not
     // a divergence — list the files so the reader sees what blocks them.
     let repo = main_checkout(root);
@@ -2191,6 +2300,24 @@ mod intelligence_tests {
         );
         assert_eq!(parse_test_command("test-command: TODO"), None);
         assert_eq!(parse_test_command("no field"), None);
+    }
+
+    #[test]
+    fn project_setting_reads_the_first_matching_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "zolly-setting-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".agents/rules")).unwrap();
+        std::fs::write(
+            dir.join(".agents/rules/project.md"),
+            "## Tooling\n\ngitnexus: on\nGITNEXUS: off\n",
+        )
+        .unwrap();
+        assert_eq!(project_setting(&dir, "gitnexus"), Some("on".into()));
+        assert_eq!(project_setting(&dir, "missing"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
