@@ -33,7 +33,7 @@ done
 
 mkdir -p "$(dirname "$DEST")"
 install -m 0755 "$HERE/zolly_mcp.py" "$DEST"
-echo "installed: $DEST"
+echo "  ✔ installed: $DEST"
 
 ENV_JSON=""
 ENTRY_KEY="zolly"
@@ -43,7 +43,6 @@ if [ -n "$FREQ" ]; then
       \"env\": { \"ZOLLY_MCP_AGENT\": \"zolly-$FREQ\", \"ZOLLY_ROOT\": \"${ROOT:-.}\" }"
 fi
 
-echo
 if [ -n "$WRITE" ]; then
   command -v python3 >/dev/null 2>&1 || {
     echo "zolly-mcp: python3 is required to merge $WRITE/.omp/mcp.json" >&2
@@ -90,8 +89,9 @@ with open(tmp, "w", encoding="utf-8") as f:
     f.write("\n")
 os.replace(tmp, path)
 PY
-  echo "registered: $WRITE/.omp/mcp.json ($ENTRY_KEY)"
+  echo "  ✔ registered: $WRITE/.omp/mcp.json ($ENTRY_KEY)"
 else
+  echo
   echo "Add this to ~/.omp/agent/mcp.json under \"mcpServers\" — one entry per"
   echo "office, under its own key; leave the other entries untouched:"
   echo

@@ -139,58 +139,34 @@ init_color
 
 die() {
   if [ "$COLOR" -eq 1 ]; then
-    printf '%sinstall.sh:%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2
+    printf '  %s✖%s install.sh: %s\n' "$C_ERR" "$C_RESET" "$1" >&2
   else
-    printf 'install.sh: %s\n' "$1" >&2
+    printf '  ✖ install.sh: %s\n' "$1" >&2
   fi
   exit 1
 }
 say() { printf '%s\n' "$1"; }
 
-# Status lines: a glyph and a color on a terminal, the historical plain
-# prefix everywhere else, so a piped log still reads the same.
-ok() {
+# One icon, one column. Every status line starts at the same place in a
+# terminal and in a piped log; the `skip ` word stays contiguous for greps.
+glyph() {
   if [ "$COLOR" -eq 1 ]; then
-    printf '  %s✔%s %s\n' "$C_OK" "$C_RESET" "$1"
+    printf '  %s%s%s %s\n' "$2" "$1" "$C_RESET" "$3"
   else
-    printf 'ok   %s\n' "$1"
+    printf '  %s %s\n' "$1" "$3"
   fi
 }
-warn() {
-  if [ "$COLOR" -eq 1 ]; then
-    printf '  %s!%s %s\n' "$C_WARN" "$C_RESET" "$1"
-  else
-    printf 'warn %s\n' "$1"
-  fi
-}
-skip() {
-  if [ "$COLOR" -eq 1 ]; then
-    # The color stops after the message: the phrase "skip MCP (--no-mcp)" has
-    # to stay contiguous for anyone grepping the captured output.
-    printf '  %s→%s %s%s%s%s\n' "$C_DIM" "$C_RESET" "$C_WARN" "skip " "$1" "$C_RESET"
-  else
-    printf 'skip %s\n' "$1"
-  fi
-}
-note() {
-  if [ "$COLOR" -eq 1 ]; then
-    printf '  %s·%s %s\n' "$C_DIM" "$C_RESET" "$1"
-  else
-    printf 'note %s\n' "$1"
-  fi
-}
-step() {
-  if [ "$COLOR" -eq 1 ]; then
-    printf '\n  %s▸ %s%s\n' "$C_ACCENT" "$1" "$C_RESET"
-  else
-    printf '\n== %s\n' "$1"
-  fi
-}
+ok()   { glyph '✔' "$C_OK" "$1"; }
+warn() { glyph '⚠' "$C_WARN" "$1"; }
+skip() { glyph '→' "$C_DIM" "skip $1"; }
+note() { glyph '·' "$C_DIM" "$1"; }
+# Section headings were removed on request: the flat list reads top to bottom.
+step() { :; }
 heading() {
   if [ "$COLOR" -eq 1 ]; then
     printf '  %s%s%s\n' "$C_BOLD" "$1" "$C_RESET"
   else
-    printf '%s\n' "$1"
+    printf '  %s\n' "$1"
   fi
 }
 
@@ -238,9 +214,9 @@ ask_yn() {
   if ! can_ask; then printf '%s\n' "$ask_def"; return 0; fi
   if [ "$ask_def" = y ]; then ask_sfx='[Y/n]'; else ask_sfx='[y/N]'; fi
   if [ "$COLOR" -eq 1 ]; then
-    printf '%s%s%s %s%s%s ' "$C_BOLD" "$ask_q" "$C_RESET" "$C_DIM" "$ask_sfx" "$C_RESET" >/dev/tty
+    printf '  %s?%s %s%s%s %s%s%s ' "$C_ACCENT" "$C_RESET" "$C_BOLD" "$ask_q" "$C_RESET" "$C_DIM" "$ask_sfx" "$C_RESET" >/dev/tty
   else
-    printf '%s %s ' "$ask_q" "$ask_sfx" >/dev/tty
+    printf '  ? %s %s ' "$ask_q" "$ask_sfx" >/dev/tty
   fi
   tty_mode
   if read -r ask_ans </dev/tty 2>/dev/null; then ask_ans=$(clean_input "$ask_ans"); else ask_ans=""; fi
@@ -254,9 +230,9 @@ ask_text() {
   ask_q="$1"; ask_def="${2:-}"
   if ! can_ask; then printf '%s\n' "$ask_def"; return 0; fi
   if [ "$COLOR" -eq 1 ]; then
-    printf '%s%s%s ' "$C_BOLD" "$ask_q" "$C_RESET" >/dev/tty
+    printf '  %s?%s %s%s%s ' "$C_ACCENT" "$C_RESET" "$C_BOLD" "$ask_q" "$C_RESET" >/dev/tty
   else
-    printf '%s ' "$ask_q" >/dev/tty
+    printf '  ? %s ' "$ask_q" >/dev/tty
   fi
   tty_mode
   if read -r ask_val </dev/tty 2>/dev/null; then ask_val=$(clean_input "$ask_val"); else ask_val=""; fi
@@ -272,9 +248,9 @@ ask_secret() {
   ask_q="$1"
   if ! can_ask; then printf '\n'; return 0; fi
   if [ "$COLOR" -eq 1 ]; then
-    printf '%s%s%s ' "$C_BOLD" "$ask_q" "$C_RESET" >/dev/tty
+    printf '  %s?%s %s%s%s ' "$C_ACCENT" "$C_RESET" "$C_BOLD" "$ask_q" "$C_RESET" >/dev/tty
   else
-    printf '%s ' "$ask_q" >/dev/tty
+    printf '  ? %s ' "$ask_q" >/dev/tty
   fi
   tty_mode
   if read -r ask_val </dev/tty 2>/dev/null; then :; else ask_val=""; fi
@@ -1025,7 +1001,7 @@ fi
 if [ "$COLOR" -eq 1 ]; then
   printf '\n  %s✔%s %soffice installed%s  %s%s%s\n' \
     "$C_OK" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_DIM" "$AGENTS_DIR" "$C_RESET"
-  printf '  %sfeatures%s' "$C_DIM" "$C_RESET"
+  printf '  %s·%s features' "$C_DIM" "$C_RESET"
   for _pair in "binary:$BIN_STATE" "MCP:$MCP_STATE" "Telegram:$TG_STATE" "systemd:$SD_STATE"; do
     _label=${_pair%%:*}; _value=${_pair#*:}
     case "$_value" in
@@ -1036,26 +1012,26 @@ if [ "$COLOR" -eq 1 ]; then
   done
   printf '\n'
 else
-  say "office installed: $AGENTS_DIR"
-  say "features: binary $BIN_STATE, MCP $MCP_STATE, Telegram $TG_STATE, systemd $SD_STATE"
+  ok "office installed  $AGENTS_DIR"
+  note "features: binary $BIN_STATE, MCP $MCP_STATE, Telegram $TG_STATE, systemd $SD_STATE"
 fi
 say ""
 heading "Next steps:"
-say "  cd $TARGET"
-say "  zolly doctor    # check the office"
-say "  zolly init      # foreman + pr-reviewer"
-say "  zolly           # sit down as the manager"
+note "cd $TARGET"
+note "zolly doctor    # check the office"
+note "zolly init      # foreman + pr-reviewer"
+note "zolly           # sit down as the manager"
 if [ "$UNBORN" -eq 1 ]; then
   say ""
   note "no commits yet — commit before dispatching (branches cut from '$BASE_BRANCH')."
 fi
 say ""
-say "Fill .agents/rules/project.md: architecture, layout, thresholds."
+note "Fill .agents/rules/project.md: architecture, layout, thresholds."
 if [ "$HAVE_CREDS" -eq 1 ]; then
-  say "Telegram: configured."
+  note "Telegram: configured."
 else
-  say "Telegram: off — token+ids in $CRED_FILE, then re-run --force."
+  warn "Telegram: off — token+ids in $CRED_FILE, then re-run --force."
 fi
 if [ "$BIN_STATE" != "installed" ]; then
-  say "Binary: $BIN_STATE — build tool/ or drop it at $BIN_DEST."
+  warn "Binary: $BIN_STATE — build tool/ or drop it at $BIN_DEST."
 fi
