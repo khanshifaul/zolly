@@ -218,17 +218,13 @@ can_ask() {
   tty 2>/dev/null >/dev/null </dev/tty
 }
 
-# tty_mode line|secret — canonical input and CR→NL, echo on or off, saved and
-# restored around the read. A terminal a TUI left in raw mode otherwise never
-# delivers the Enter that ends the line.
+# tty_mode — canonical input and CR→NL, echo on, saved and restored around the
+# read. A terminal a TUI left in raw mode otherwise never delivers the Enter
+# that ends the line.
 tty_mode() {
   tty_saved=$(stty -g </dev/tty 2>/dev/null || true)
   [ -n "$tty_saved" ] || return 0
-  if [ "$1" = secret ]; then
-    stty icanon icrnl -echo </dev/tty 2>/dev/null || true
-  else
-    stty icanon icrnl echo </dev/tty 2>/dev/null || true
-  fi
+  stty icanon icrnl echo </dev/tty 2>/dev/null || true
 }
 tty_restore() {
   [ -z "${tty_saved:-}" ] || stty "$tty_saved" </dev/tty 2>/dev/null || true
@@ -246,7 +242,7 @@ ask_yn() {
   else
     printf '%s %s ' "$ask_q" "$ask_sfx" >/dev/tty
   fi
-  tty_mode line
+  tty_mode
   if read -r ask_ans </dev/tty 2>/dev/null; then ask_ans=$(clean_input "$ask_ans"); else ask_ans=""; fi
   tty_restore
   [ -n "$ask_ans" ] || ask_ans="$ask_def"
@@ -262,15 +258,16 @@ ask_text() {
   else
     printf '%s ' "$ask_q" >/dev/tty
   fi
-  tty_mode line
+  tty_mode
   if read -r ask_val </dev/tty 2>/dev/null; then ask_val=$(clean_input "$ask_val"); else ask_val=""; fi
   tty_restore
   [ -n "$ask_val" ] || ask_val="$ask_def"
   printf '%s\n' "$ask_val"
 }
 
-# ask_secret <question> — prints the line read, with terminal echo off so a
-# token never lands on the screen or in the scrollback.
+# ask_secret <question> — prints the line read with echo on. The founder
+# pastes the token here; seeing it is the point. It still never reaches shell
+# history (read, not executed) and is not written to any log.
 ask_secret() {
   ask_q="$1"
   if ! can_ask; then printf '\n'; return 0; fi
@@ -279,7 +276,7 @@ ask_secret() {
   else
     printf '%s ' "$ask_q" >/dev/tty
   fi
-  tty_mode secret
+  tty_mode
   if read -r ask_val </dev/tty 2>/dev/null; then :; else ask_val=""; fi
   # Bracketed paste is atomic, but a clipboard newline ends the read early.
   # Keep reading until the closing marker arrives (bounded, so no hang).
@@ -295,12 +292,6 @@ ask_secret() {
   done
   tty_restore
   ask_val=$(clean_input "$ask_val")
-  # Echo is off, so say what happened without saying the token.
-  if [ -n "$ask_val" ]; then
-    printf '  %s·%s %s characters entered\n' "$C_DIM" "$C_RESET" "${#ask_val}" >/dev/tty
-  else
-    printf '  %s·%s nothing entered\n' "$C_DIM" "$C_RESET" >/dev/tty
-  fi
   printf '%s\n' "$ask_val"
 }
 
@@ -1049,45 +1040,23 @@ else
   say "office installed: $AGENTS_DIR"
   say "features: binary $BIN_STATE, MCP $MCP_STATE, Telegram $TG_STATE, systemd $SD_STATE"
 fi
+say ""
+heading "Next steps:"
+say "  cd $TARGET"
+say "  zolly doctor    # check the office"
+say "  zolly init      # foreman + pr-reviewer"
+say "  zolly           # sit down as the manager"
 if [ "$UNBORN" -eq 1 ]; then
   say ""
-  note "this repository has no commits yet. Make the first commit before"
-  say "     dispatching a task — task branches are cut from '$BASE_BRANCH'."
+  note "no commits yet — commit before dispatching (branches cut from '$BASE_BRANCH')."
 fi
 say ""
-heading "Next steps (printed, not run — they touch your shell and your services):"
-say ""
-say "1. Check the office:"
-if [ "$BIN_STATE" = "installed" ]; then
-  say "     cd $TARGET && $BIN_DEST doctor"
-else
-  say "     no shared binary yet ($BIN_STATE) — build it with the shipped tool/ crate,"
-  say "     or place it at $BIN_DEST, before steps 1 and 2"
-fi
-say ""
-say "2. Start the seats (foreman + pr-reviewer):"
-say "     cd $TARGET && $BIN_DEST init"
-say ""
-say "3. Sit down:"
-say ""
-say "     cd $TARGET && zolly"
-say ""
-say "   Bare zolly joins this office's bus and starts omp with the manager"
-say "   persona (@.agents/zolly/agent.md). Every subcommand is unchanged;"
-say "   outside an office it says so instead of starting a seat."
-say ""
-say "4. Write this project's truths into $AGENTS_DIR/rules/project.md —"
-say "   the architecture, where things live, the size thresholds. The template"
-say "   shipped that file empty on purpose: it is yours."
-say ""
-say "5. Telegram:"
+say "Fill .agents/rules/project.md: architecture, layout, thresholds."
 if [ "$HAVE_CREDS" -eq 1 ]; then
-  say "   configured. Enable the listener:"
-  say "     systemctl --user daemon-reload"
-  say "     systemctl --user enable --now zolly@$FREQ.service"
+  say "Telegram: configured."
 else
-  say "   not configured, so no listener unit was written. Put the token in"
-  say "     $CRED_FILE"
-  say "   (ZOLLY_TELEGRAM_TOKEN=... and ZOLLY_ALLOWED_IDS=...), then re-run the"
-  say "   install command with --force (memory, hires and project.md are kept)."
+  say "Telegram: off — token+ids in $CRED_FILE, then re-run --force."
+fi
+if [ "$BIN_STATE" != "installed" ]; then
+  say "Binary: $BIN_STATE — build tool/ or drop it at $BIN_DEST."
 fi

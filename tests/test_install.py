@@ -487,7 +487,8 @@ class InstallTests(unittest.TestCase):
         # Modern terminals wrap a paste in ESC[200~ … ESC[201~; the markers are
         # part of the line a plain read() sees, and must not reach the file.
         text = self.install_with_pasted_token("paste-one", b"\x1b[200~123456:ABCdef\x1b[201~\n")
-        self.assertIn("characters entered", text)
+        self.assertIn("123456:ABCdef", text)
+        self.assertNotIn("characters entered", text)
 
     def test_pasted_token_split_by_a_clipboard_newline_is_used_verbatim(self):
         # A clipboard that ends in a newline splits the paste across two reads.
