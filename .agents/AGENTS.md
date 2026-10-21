@@ -39,7 +39,8 @@ project-specific lives in `.agents/rules/project.md` and
 │   ├── entity-store.schema.md  # the shape of the optional entity index
 │   └── archive/           # rolled-off memory (.gitkeep keeps the dir in git)
 ├── worker/
-│   └── generic.md         # the default worker persona
+│   ├── generic.md         # the default worker persona
+│   └── <role>.md          # starter personas (examples; a hire replaces them)
 ├── shared/
 │   └── memory             # the bounded, atomic, secret-refusing memory CLI
 ├── hr/
@@ -119,10 +120,18 @@ Three kinds of file, three naming rules:
 
 A seat gets `agent.md` because there is exactly one seat per directory and only
 the boot prompt varies. A worker gets `<role>.md` because many roles share one
-directory (`generic.md`, then whatever `hr.py hire` writes). `hr/` has no
-`agent.md` on purpose: HR is a tool, not a seat — nothing boots it. `shared/`
-holds tools no single agent owns; its one file is the memory CLI, which is why
-it is executable and has no `.sh` suffix — agents call it by name.
+directory (`generic.md`, the starter personas, then whatever `hr.py hire`
+writes). `hr/` has no `agent.md` on purpose: HR is a tool, not a seat — nothing
+boots it. `shared/` holds tools no single agent owns; its one file is the memory
+CLI, which is why it is executable and has no `.sh` suffix — agents call it by
+name.
+
+The kit ships starter personas for common sales and marketing roles. They are
+examples, not staff: `.agents/hr/<role>.md` plus the `.hired` receipt is still
+what puts a role on staff, and `hr.py hire` replaces the starter with the
+project-specific version. A starter carries
+`<!-- kit starter persona: … -->`; a hired persona does not, so later re-hires
+leave hand edits alone.
 
 ## Load lines — every file here has one
 
@@ -170,6 +179,7 @@ register; a file with no row is a file nobody opens.
 | `reviewer/agent.md` | the reviewer seat | loaded by `zolly init` |
 | `reviewer/rules/extensions.md` | the reviewer | named in `reviewer/agent.md` |
 | `worker/generic.md` | a worker seat | named in `foreman/agent.md` when a worker is spawned |
+| `worker/<role>.md` | a worker with a named role | `foreman/agent.md`: "if the brief names a role, load that persona instead" |
 
 ### The boot prompts
 

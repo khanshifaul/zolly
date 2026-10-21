@@ -100,9 +100,9 @@ You plan, delegate, monitor, report, go idle. Next prompt = next task.
 
    The worker's own persona is `.agents/worker/generic.md` — read it before
    writing the brief, so the brief and the persona agree on what the worker
-   reports. A worker persona with a specific role (a hire request rendered by
-   `.agents/hr/hr.py`) overrides the generic one; if the brief names a role,
-   load that persona instead.
+   reports. A persona with a specific role — a starter shipped in the kit or a
+   hire rendered by `.agents/hr/hr.py` — overrides the generic one; if the brief
+   names a role, load `.agents/worker/<role>.md` instead.
 3. `herdr agent start worker-{{FREQUENCY}}-<task-id> --kind omp --pane <pane-id>` → starts worker
 4. `zolly worker-brief worker-{{FREQUENCY}}-<task-id> --file <brief-path> --timeout-ms 1800000` → delivers the brief and returns only once the turn has **started**
 5. **Monitor**: check its pane output; if it stalls or drifts, message it —

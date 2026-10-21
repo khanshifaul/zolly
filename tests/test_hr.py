@@ -83,6 +83,21 @@ class HrTests(unittest.TestCase):
         self.assertTrue(receipt.is_file())
         self.assertIn("persona: .agents/worker/researcher.md", receipt.read_text(encoding="utf-8"))
 
+    def test_starter_persona_is_replaced_on_hire(self):
+        self.file_request(status="approved")
+        self.worker_dir.mkdir(parents=True)
+        starter = self.worker_dir / "researcher.md"
+        starter.write_text(
+            "<!-- kit starter persona: an approved hire replaces this file -->\n"
+            "# Researcher\n\nROLE: researcher\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.hire(), 0)
+        text = starter.read_text(encoding="utf-8")
+        self.assertNotIn("kit starter persona", text)
+        self.assertIn("ROLE: researcher", text)
+        self.assertTrue((self.hr_dir / "researcher.hired").is_file())
+
     def test_rehire_is_a_noop_without_force(self):
         self.file_request(status="approved")
         self.assertEqual(self.hire(), 0)

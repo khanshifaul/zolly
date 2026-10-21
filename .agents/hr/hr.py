@@ -24,6 +24,11 @@ Why the receipt: a persona file is not proof a hire happened. Without it, the
 only way to know is to stat a file and hope — and a persona someone wrote by
 hand once would look identical to one HR produced.
 
+The kit ships starter personas (marked `<!-- kit starter persona:`) for common
+roles. They are examples, not staff: an approved hire replaces the starter, and
+a real hire no longer carries the marker, so later re-hires still leave it
+alone.
+
 ## The reviewer seat is hand-authored
 
 The reviewer is the one seat with a hand-written persona
@@ -57,6 +62,11 @@ REPO = Path(__file__).resolve().parents[2]
 # symlink allowed.
 HR = REPO / ".agents" / "hr"
 PERSONAS = REPO / ".agents" / "worker"
+
+# The kit ships starter personas for roles nobody has hired yet. This marker
+# separates "replaceable example" from "hand-edited persona": a real hire does
+# not carry it, so re-hiring without --force still leaves that file alone.
+STARTER_MARKER = "<!-- kit starter persona:"
 
 # The persona frontmatter. omp reads `name` and `description` when it lists
 # agents; everything else is body prose the agent reads on invocation.
@@ -238,8 +248,11 @@ def do_hire(role: str, *, force: bool = False, dry_run: bool = False) -> int:
     PERSONAS.mkdir(parents=True, exist_ok=True)
     target = persona_path(role)
     if target.exists() and not force:
-        print(f"hr: {target} already exists — {role} is already on staff")
-        return 0
+        existing = target.read_text(encoding="utf-8")
+        if STARTER_MARKER not in existing:
+            print(f"hr: {target} already exists — {role} is already on staff")
+            return 0
+        print(f"hr: replacing the starter persona at {target.relative_to(REPO)}")
 
     if dry_run:
         print(f"hr: would write {target.relative_to(REPO)}")

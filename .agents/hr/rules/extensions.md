@@ -10,6 +10,12 @@ HR hires workers by rendering persona files from hire requests.
 - Personas are written to `.agents/worker/<role>.md`
 - Receipts are `.agents/hr/<role>.hired`
 
+The kit ships starter personas in `.agents/worker/` for common roles. They are
+examples, not roster entries: a role is on staff only after an approved request
+and its `.hired` receipt. Hiring replaces a starter (marked
+`<!-- kit starter persona: … -->`) and never overwrites a persona without that
+marker unless `--force` is passed.
+
 The hire tool is `.agents/hr/hr.py`:
 
 ```sh
