@@ -751,11 +751,13 @@ elif [ -x "$BIN_DEST" ]; then
   ok "already installed: $BIN_DEST"
   BIN_STATE="installed"
 else
-  # The Rust source is not part of this kit. ZOLLY_TOOL_DIR is the only
-  # location the installer assumes; a sibling checkout is not guessed.
-  TOOL_DIR="${ZOLLY_TOOL_DIR:-}"
+  # The crate ships beside this script in tool/. A checkout that keeps it
+  # elsewhere overrides with ZOLLY_TOOL_DIR; no other location is guessed.
+  TOOL_DIR="${ZOLLY_TOOL_DIR:-$SCRIPT_DIR/tool}"
   if [ -n "$TOOL_DIR" ] && [ -f "$TOOL_DIR/Cargo.toml" ]; then
-    if [ "$(ask_yn "Install the shared zolly binary now? (built from $TOOL_DIR)" y)" = n ]; then
+    if ! command -v cargo >/dev/null 2>&1; then
+      skip "binary (cargo not found) — install it at $BIN_DEST later"
+    elif [ "$(ask_yn "Install the shared zolly binary now? (built from $TOOL_DIR)" y)" = n ]; then
       skip "binary (declined)"
     elif [ "$DRY_RUN" -eq 1 ]; then
       say "would build $TOOL_DIR and install to $BIN_DEST"
@@ -765,11 +767,15 @@ else
       ( cd "$TOOL_DIR" && cargo build --release ) || die "cargo build failed in $TOOL_DIR"
       mkdir -p "$(dirname "$BIN_DEST")"
       install -m 0755 "$TOOL_DIR/target/release/zolly" "$BIN_DEST"
+      # Voice transcription resolves stt.py beside the binary first; the
+      # office-local fallback no longer exists now that the crate lives in
+      # the kit. Best-effort: voice is optional and config-gated.
+      [ -f "$TOOL_DIR/stt.py" ] && install -m 0644 "$TOOL_DIR/stt.py" "$(dirname "$BIN_DEST")/stt.py"
       ok "installed $BIN_DEST"
       BIN_STATE="installed"
     fi
   else
-    die "no Rust tool source found — set ZOLLY_TOOL_DIR to the crate, or install the binary at $BIN_DEST and re-run with --no-binary"
+    die "no Rust tool source found at $TOOL_DIR — set ZOLLY_TOOL_DIR to the crate, or install the binary at $BIN_DEST and re-run with --no-binary"
   fi
 fi
 
@@ -1043,7 +1049,7 @@ say "1. Check the office:"
 if [ "$BIN_STATE" = "installed" ]; then
   say "     cd $TARGET && $BIN_DEST doctor"
 else
-  say "     no shared binary yet ($BIN_STATE) — build it with ZOLLY_TOOL_DIR=<crate>,"
+  say "     no shared binary yet ($BIN_STATE) — build it with the shipped tool/ crate,"
   say "     or place it at $BIN_DEST, before steps 1 and 2"
 fi
 say ""

@@ -166,6 +166,18 @@ class InstallTests(unittest.TestCase):
             "a reinstall must not drop queued work",
         )
 
+    def test_binary_source_is_found_in_the_kit(self):
+        # The crate ships in tool/. A dry run proves the installer found it
+        # without paying for a real build.
+        repo = self.make_repo("app")
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-systemd", "--yes", "--founder", "Test", "--dry-run"],
+            env=self.env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"would build {ROOT / 'tool'}", result.stdout)
+
     def test_empty_folder_without_git_is_refused(self):
         repo = self.root / "blank"
         repo.mkdir()

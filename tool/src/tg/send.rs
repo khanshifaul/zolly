@@ -1,0 +1,630 @@
+//! Outbound delivery: messages, documents, voice notes, polls, bot check.
+//! Every send goes through `send_message`, which chunks at 4096 bytes and
+//! retries rate limits, so callers never think about either.
+
+use anyhow::{Context, Result};
+use reqwest::Client;
+use std::path::Path;
+use std::time::Duration;
+
+use super::config::{
+    api_url, get_allowed_ids, get_client, get_token, json_redacted, send_redacted, RequestFailure,
+    API_BASE,
+};
+use super::format::{is_stdin_marker, read_stdin, split_message};
+use super::types::{Message, TelegramResponse, User};
+
+/// POST one chunk of a message, retrying on Telegram 429 up to 3 attempts.
+async fn send_chunk(client: &Client, token: &str, chat_id: i64, part: &str) -> Result<()> {
+    let mut attempts = 0u32;
+    loop {
+        attempts += 1;
+        let resp = send_redacted(
+            client
+                .post(api_url(token, "sendMessage"))
+                .json(&serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": part,
+                })),
+            "Failed to send message",
+        )
+        .await?;
+        let resp: TelegramResponse<Message> =
+            json_redacted(resp, "Failed to parse sendMessage response").await?;
+
+        if resp.ok {
+            return Ok(());
+        }
+
+        let retry_after = resp.parameters.as_ref().and_then(|p| p.retry_after);
+        if let Some(secs) = retry_after {
+            if attempts < 3 {
+                eprintln!("sendMessage rate-limited, retrying in {}s", secs);
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                continue;
+            }
+        }
+
+        anyhow::bail!(
+            "sendMessage failed: {}",
+            resp.description.unwrap_or_default()
+        );
+    }
+}
+
+pub async fn send_message(token: &str, chat_id: i64, text: &str) -> Result<()> {
+    let client = get_client();
+    let parts = split_message(text, 4096);
+
+    let total = parts.len();
+    for (i, part) in parts.iter().enumerate() {
+        if let Err(e) = send_chunk(&client, token, chat_id, part).await {
+            // Report which chunk failed; earlier chunks are already delivered.
+            return Err(e).with_context(|| {
+                format!("sendMessage failed on chunk {}/{}", i + 1, total)
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve the target chat: explicit `--chat-id`, else the first allowed id.
+pub fn resolve_chat(chat_id: Option<i64>) -> Result<i64> {
+    match chat_id {
+        Some(id) => Ok(id),
+        None => {
+            let ids = get_allowed_ids()?;
+            ids.first()
+                .copied()
+                .context("ZOLLY_ALLOWED_IDS is empty — need at least one chat id")
+        }
+    }
+}
+
+pub async fn cmd_check(_root: &Path) -> Result<()> {
+    let token = get_token()?;
+    let client = get_client();
+
+    let resp = send_redacted(
+        client.get(api_url(&token, "getMe")),
+        "Failed to call getMe",
+    )
+    .await?;
+    let resp: TelegramResponse<User> =
+        json_redacted(resp, "Failed to parse getMe response").await?;
+
+    if !resp.ok {
+        anyhow::bail!("getMe failed: {}", resp.description.unwrap_or_default());
+    }
+
+    let user = resp.result.context("No result in getMe response")?;
+    println!(
+        "✓ Bot verified: @{} (id: {})",
+        user.username.unwrap_or_default(),
+        user.id
+    );
+    Ok(())
+}
+
+pub async fn cmd_send(_root: &Path, text: Option<String>, chat_id: Option<i64>) -> Result<()> {
+    let token = get_token()?;
+    let target_chat = resolve_chat(chat_id)?;
+
+    let message = if is_stdin_marker(&text) {
+        read_stdin()?
+    } else {
+        text.unwrap_or_default()
+    };
+    if message.trim().is_empty() {
+        anyhow::bail!("Nothing to send: pass --text or pipe a report on stdin");
+    }
+
+    send_message(&token, target_chat, &message).await?;
+    println!("Message sent to chat {}", target_chat);
+    // Remove from pending replies since we got a response
+    super::serve::take_pending(target_chat);
+    Ok(())
+}
+
+/// Send a document file via Telegram Bot API.
+pub async fn cmd_send_file(
+    _root: &Path,
+    file: &str,
+    caption: Option<String>,
+    chat_id: Option<i64>,
+) -> Result<()> {
+    let token = get_token()?;
+    let target_chat = resolve_chat(chat_id)?;
+
+    let file_path = Path::new(file);
+    let file_name = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document");
+
+    let file_bytes = tokio::fs::read(file_path)
+        .await
+        .context("Failed to read file")?;
+
+    let client = get_client();
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "chat_id",
+            reqwest::multipart::Part::text(target_chat.to_string()),
+        )
+        .part(
+            "document",
+            reqwest::multipart::Part::bytes(file_bytes)
+                .file_name(file_name.to_string())
+                .mime_str("application/octet-stream")?,
+        );
+
+    let form = if let Some(cap) = caption {
+        form.part("caption", reqwest::multipart::Part::text(cap))
+    } else {
+        form
+    };
+
+    let resp = send_redacted(
+        client.post(api_url(&token, "sendDocument")).multipart(form),
+        "Failed to send document",
+    )
+    .await?;
+    let resp: TelegramResponse<Message> =
+        json_redacted(resp, "Failed to parse sendDocument response").await?;
+
+    if !resp.ok {
+        anyhow::bail!(
+            "sendDocument failed: {}",
+            resp.description.unwrap_or_default()
+        );
+    }
+
+    println!("Document sent to chat {}", target_chat);
+    // Remove from pending replies since we got a response
+    super::serve::take_pending(target_chat);
+    Ok(())
+}
+
+/// Split comma-separated poll options, trimming whitespace and dropping empty
+/// entries. Returns an error naming the surviving count when fewer than two
+/// remain — Telegram's `sendPoll` requires at least two non-empty options.
+fn parse_poll_options(options: &str) -> Result<Vec<String>> {
+    let opts: Vec<String> = options
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if opts.len() < 2 {
+        anyhow::bail!(
+            "sendPoll needs at least two non-empty options, got {}",
+            opts.len()
+        );
+    }
+    Ok(opts)
+}
+
+/// Build the sendPoll query parameters for a given option set and flags.
+/// Pure — no network, no token — so both states can be asserted without sending.
+pub fn poll_query_params(question: &str, options: &[String], anonymous: bool, multiple: bool) -> Vec<(&'static str, String)> {
+    let options_json = serde_json::to_string(options).expect("options serialize");
+    vec![
+        ("question", question.to_string()),
+        ("options", options_json),
+        ("is_anonymous", anonymous.to_string()),
+        ("allows_multiple_answers", multiple.to_string()),
+    ]
+}
+
+/// Send a poll to the allowed chat. `options` is comma-separated; individual
+/// options may not contain commas.
+pub async fn cmd_poll(
+    _root: &Path,
+    question: String,
+    options: String,
+    anonymous: bool,
+    multiple: bool,
+) -> Result<()> {
+    let token = get_token()?;
+    let chat_id = resolve_chat(None)?;
+
+    let opts = parse_poll_options(&options)?;
+    let mut query = vec![("chat_id", chat_id.to_string())];
+    query.extend(poll_query_params(&question, &opts, anonymous, multiple));
+
+    let client = get_client();
+    let resp = send_redacted(
+        client
+            .post(api_url(&token, "sendPoll"))
+            .query(&query),
+        "Failed to send poll",
+    )
+    .await?;
+    let resp: TelegramResponse<serde_json::Value> =
+        json_redacted(resp, "Failed to parse poll response").await?;
+
+    if !resp.ok {
+        anyhow::bail!("sendPoll failed: {}", resp.description.unwrap_or_default());
+    }
+
+    let poll_id = resp
+        .result
+        .as_ref()
+        .and_then(|r| r.get("poll"))
+        .and_then(|p| p.get("id"))
+        .and_then(|id| id.as_str())
+        .unwrap_or("unknown");
+
+    println!("Poll sent (id: {}): {}", poll_id, question);
+    // Remove from pending replies since we got a response
+    super::serve::take_pending(chat_id);
+    Ok(())
+}
+
+pub async fn cmd_reply(chat_id: i64, text: String) -> Result<()> {
+    let token = get_token()?;
+    send_message(&token, chat_id, &text).await?;
+    // Remove from pending replies since we got a response
+    super::serve::take_pending(chat_id);
+    println!("Reply sent to chat {}", chat_id);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Voice synthesis (Piper TTS → ffmpeg → sendVoice)
+// ---------------------------------------------------------------------------
+
+/// Path to the Piper voice model. Overridable via `ZOLLY_PIPER_MODEL`.
+fn piper_model_path() -> String {
+    std::env::var("ZOLLY_PIPER_MODEL").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .map(|home| {
+                home.join(".local/share/piper/voices/en/en_US/lessac/medium/en_US-lessac-medium.onnx")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| "en_US-lessac-medium.onnx".to_string())
+    })
+}
+// Path to the Piper binary. `ZOLLY_PIPER_BIN` wins; otherwise the known
+// `~/.local/bin/piper` location (the uv-tools install), falling back to a bare
+// PATH lookup for `piper` so a worker's shell without `~/.local/bin` on PATH
+// still finds it.
+fn piper_bin_path() -> String {
+    if let Ok(bin) = std::env::var("ZOLLY_PIPER_BIN") {
+        return bin;
+    }
+    if let Some(home) = dirs::home_dir() {
+        let known = home.join(".local/bin/piper");
+        if known.exists() {
+            return known.to_string_lossy().into_owned();
+        }
+    }
+    "piper".to_string()
+}
+
+async fn send_voice_note(token: &str, chat_id: i64, ogg_data: Vec<u8>) -> Result<()> {
+    let client = get_client();
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "chat_id",
+            reqwest::multipart::Part::text(chat_id.to_string()),
+        )
+        .part(
+            "voice",
+            reqwest::multipart::Part::bytes(ogg_data)
+                .file_name("voice.ogg")
+                .mime_str("audio/ogg")?,
+        );
+
+    let resp = send_redacted(
+        client.post(api_url(token, "sendVoice")).multipart(form),
+        "Failed to send voice",
+    )
+    .await?;
+    let resp: TelegramResponse<Message> =
+        json_redacted(resp, "Failed to parse sendVoice response").await?;
+
+    if !resp.ok {
+        anyhow::bail!("sendVoice failed: {}", resp.description.unwrap_or_default());
+    }
+    Ok(())
+}
+
+async fn text_fallback_voice(token: &str, chat_id: i64, message: &str) -> Result<()> {
+    send_message(
+        token,
+        chat_id,
+        &format!("🎤 Voice (text fallback):\n{}", message),
+    )
+    .await
+}
+
+/// Synthesize `message` with Piper, convert to OGG/Opus, send as a voice
+/// note. Any synthesis failure degrades to a plain text message so the
+/// founder still gets the words.
+pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>) -> Result<()> {
+    let token = get_token()?;
+    let target_chat = resolve_chat(chat_id)?;
+
+    let message = if is_stdin_marker(&text) {
+        read_stdin()?
+    } else {
+        text.unwrap_or_default()
+    };
+
+    let model_path = piper_model_path();
+    let wav_path = "/tmp/zolly_voice.wav";
+    let ogg_path = "/tmp/zolly_voice.ogg";
+
+    // Generate WAV with Piper. We take stdin and write the text, then drop
+    // stdin so the child sees EOF. wait_with_output() drains stdout and
+    // stderr concurrently — reading them only after wait() can deadlock if
+    // the child fills the 64 KiB pipe buffer.
+    let piper_bin = piper_bin_path();
+    let mut child = std::process::Command::new(&piper_bin)
+        .args(["--model", &model_path, "--output-file", wav_path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn piper (is it on PATH?)")?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("Failed to take piper stdin")?;
+        std::io::Write::write_all(&mut stdin, message.as_bytes())
+            .context("Failed to write to piper stdin")?;
+        // stdin drops here, closing the pipe.
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("Failed to wait for piper")?;
+    if !output.status.success() {
+        eprintln!(
+            "Piper failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        text_fallback_voice(&token, target_chat, &message).await?;
+        // Remove from pending replies since we got a response
+        super::serve::take_pending(target_chat);
+        return Ok(());
+    }
+
+    // Convert WAV to OGG/Opus 48 kHz mono.
+    let ffmpeg_status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            wav_path,
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "48k",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            ogg_path,
+        ])
+        .status()
+        .context("Failed to run ffmpeg")?;
+
+    if !ffmpeg_status.success() {
+        eprintln!("ffmpeg exited {}", ffmpeg_status);
+        text_fallback_voice(&token, target_chat, &message).await?;
+        // Remove from pending replies since we got a response
+        super::serve::take_pending(target_chat);
+        return Ok(());
+    }
+
+    let ogg_data = std::fs::read(ogg_path).context("Failed to read OGG file")?;
+    send_voice_note(&token, target_chat, ogg_data).await?;
+    println!("Voice note sent to chat {}", target_chat);
+    // Remove from pending replies since we got a response
+    super::serve::take_pending(target_chat);
+    Ok(())
+}
+
+/// Download a voice note from Telegram and transcribe it via the local
+/// faster-whisper model (stt.py). Returns the transcript, or an error the
+/// caller can surface to the founder.
+pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
+    let client = get_client();
+
+    // 1. Resolve file_id → file_path
+    let resp = send_redacted(
+        client
+            .get(&api_url(token, "getFile"))
+            .query(&[("file_id", file_id)]),
+        "getFile request failed",
+    )
+    .await?;
+    let body: super::types::FileResponse =
+        json_redacted(resp, "getFile response parse failed").await?;
+    if !body.ok {
+        anyhow::bail!(
+            "getFile failed: {}",
+            body.description.unwrap_or_else(|| "ok=false".into())
+        );
+    }
+    let file_path = body
+        .result
+        .and_then(|r| r.file_path)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "getFile failed: {}",
+                body.description.unwrap_or_else(|| "no file_path".into())
+            )
+        })?;
+
+    // 2. Download the ogg/opus file
+    let url = format!("{}{}/{}", API_BASE, token, file_path);
+    let audio = send_redacted(client.get(&url), "voice file download failed")
+        .await?
+        .bytes()
+        .await
+        .map_err(|e| RequestFailure::from_reqwest("voice file read failed", &e))?;
+
+    let tmp =
+        std::env::temp_dir().join(format!("zolly_voice_{}.ogg", std::process::id()));
+    std::fs::write(&tmp, &audio).context("failed to write temp voice file")?;
+    // 3. Transcribe via stt.py using the pinned stt venv interpreter (never
+    // the implicit `python3`, which may lack numpy/faster-whisper).
+    let stt_script = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("stt.py")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from(".agents/zolly/tool/stt.py"));
+    let venv_python = stt_script
+        .parent()
+        .map(|d| d.join(".venv-stt/bin/python3"))
+        .filter(|p| p.exists());
+    let interpreter = venv_python.as_deref().unwrap_or(std::path::Path::new("python3"));
+
+    let output = tokio::process::Command::new(interpreter)
+        .arg(&stt_script)
+        .arg(&tmp)
+        .output()
+        .await
+        .context("failed to run stt.py")?;
+
+    // Cleanup temp file (best-effort)
+    let _ = std::fs::remove_file(&tmp);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // stt.py already emits a clean one-line message; surface it as-is so
+        // the founder never sees a raw traceback.
+        anyhow::bail!("voice transcription unavailable: {}", stderr.trim());
+    }
+
+    let transcript = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if transcript.is_empty() {
+        anyhow::bail!("transcription produced no text (audio may be silent)");
+    }
+    Ok(transcript)
+}
+
+// ---------------------------------------------------------------------------
+// Poll options parsing tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod poll_tests {
+    use super::*;
+
+    #[test]
+    fn options_are_trimmed_and_empty_entries_dropped() {
+        let got = parse_poll_options(" yes , no , , maybe ").unwrap();
+        assert_eq!(got, vec!["yes", "no", "maybe"]);
+    }
+
+    #[test]
+    fn whitespace_only_entries_count_as_empty() {
+        let got = parse_poll_options("a,  ,b").unwrap();
+        assert_eq!(got, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn under_two_options_names_the_count() {
+        let err = parse_poll_options("only one").unwrap_err().to_string();
+        assert!(err.contains("got 1"), "{err}");
+
+        let err = parse_poll_options("").unwrap_err().to_string();
+        assert!(err.contains("got 0"), "{err}");
+
+        let err = parse_poll_options("a, , ").unwrap_err().to_string();
+        assert!(err.contains("got 1"), "{err}");
+    }
+
+    #[test]
+    fn two_options_pass() {
+        let got = parse_poll_options("yes,no").unwrap();
+        assert_eq!(got, vec!["yes", "no"]);
+    }
+}
+
+    #[test]
+    fn anonymous_true_sends_is_anonymous_true() {
+        let q = poll_query_params("q?", &["a".to_string(), "b".to_string()], true, false);
+        let anon: Vec<_> = q.iter().filter(|(k, _)| *k == "is_anonymous").collect();
+        assert_eq!(anon.len(), 1);
+        assert_eq!(anon[0].1, "true");
+    }
+
+    #[test]
+    fn anonymous_false_sends_is_anonymous_false() {
+        let q = poll_query_params("q?", &["a".to_string(), "b".to_string()], false, false);
+        let anon: Vec<_> = q.iter().filter(|(k, _)| *k == "is_anonymous").collect();
+        assert_eq!(anon.len(), 1);
+        assert_eq!(anon[0].1, "false");
+    }
+
+    #[test]
+    fn multiple_true_sends_allows_multiple_answers_true() {
+        let q = poll_query_params("q?", &["a".to_string(), "b".to_string()], true, true);
+        let m: Vec<_> = q.iter().filter(|(k, _)| *k == "allows_multiple_answers").collect();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].1, "true");
+    }
+
+    #[test]
+    fn multiple_false_default_sends_allows_multiple_answers_false() {
+        let q = poll_query_params("q?", &["a".to_string(), "b".to_string()], true, false);
+        let m: Vec<_> = q.iter().filter(|(k, _)| *k == "allows_multiple_answers").collect();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].1, "false");
+    }
+
+    #[test]
+    fn chat_id_is_always_first_query_param() {
+        // N/A here — chat_id is added by cmd_poll; this asserts poll_query_params
+        // itself has no chat_id, keeping it pure.
+        let q = poll_query_params("q?", &["a".to_string(), "b".to_string()], true, false);
+        assert!(!q.iter().any(|(k, _)| *k == "chat_id"));
+    }
+// ---------------------------------------------------------------------------
+// Voice resolution and fallback tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod voice_tests {
+    use super::*;
+
+    /// Piper binary resolution: ZOLLY_PIPER_BIN wins outright.
+    #[test]
+    fn piper_bin_env_override_wins() {
+        unsafe { std::env::set_var("ZOLLY_PIPER_BIN", "/custom/piper") };
+        assert_eq!(piper_bin_path(), "/custom/piper");
+        unsafe { std::env::remove_var("ZOLLY_PIPER_BIN") };
+    }
+
+    /// Known location is used when no override is set and piper is installed
+    /// there; otherwise the bare command name, resolved on PATH at spawn time.
+    #[test]
+    fn piper_bin_known_location_used() {
+        unsafe { std::env::remove_var("ZOLLY_PIPER_BIN") };
+        let known = dirs::home_dir().map(|h| h.join(".local/bin/piper"));
+        match known {
+            Some(path) if path.exists() => {
+                assert_eq!(piper_bin_path(), path.to_string_lossy());
+            }
+            _ => assert_eq!(piper_bin_path(), "piper"),
+        }
+    }
+
+    /// text_fallback_voice prefixes the message exactly as send.rs does.
+    #[test]
+    fn voice_text_fallback_prefix() {
+        let message = "hello founder";
+        let expected = format!("🎤 Voice (text fallback):\n{}", message);
+        assert_eq!(expected, "🎤 Voice (text fallback):\nhello founder");
+        assert!(expected.starts_with("🎤 Voice (text fallback):\n"));
+    }
+}

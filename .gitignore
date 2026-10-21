@@ -5,6 +5,9 @@ __pycache__/
 .venv/
 .DS_Store
 
+# The crate ships in tool/; its build output does not.
+tool/target/
+
 # `.agents/memory/archive/` is committed on purpose (it is the long-term
 # memory), so it must NOT be ignored. Only transient write artefacts are.
 .agents/memory/.work/

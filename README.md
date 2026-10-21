@@ -59,9 +59,10 @@ curl -fsSL "https://raw.githubusercontent.com/khanshifaul/zolly/$ZOLLY_REF/insta
   | ZOLLY_REF="$ZOLLY_REF" bash -s -- ~/Projects/my-app --founder "Your Name"
 ```
 
-The command installs the office **and** the shared `zolly` binary. On a machine
-without the Rust tool source (or a preinstalled binary), add `--no-binary`; the
-office skeleton still installs, and the binary can be added later with
+The command installs the office **and** the shared `zolly` binary, built from the
+crate that ships in `tool/`. On a machine without a Rust toolchain (or with a
+preinstalled binary), add `--no-binary`; the office skeleton still installs, and
+the binary can be added later with `./install.sh ...` (it finds `tool/`) or
 `ZOLLY_TOOL_DIR=<crate> ./install.sh ...`.
 
 `ZOLLY_KIT_URL=<tarball>` overrides the download entirely (a fork, a mirror, or
@@ -301,10 +302,12 @@ zolly/
 ├── test.sh             # syntax + unit + MCP handshake
 ├── README.md           # this file
 ├── tests/              # the kit's own tests
+├── tool/               # the Rust crate — the one shared binary
 └── .agents/            # the template — the office kit, project-agnostic
 ```
 
-The Rust tool source is not part of this repository. A project installs the
-shared binary once (`ZOLLY_TOOL_DIR=<crate>`, or a prebuilt `~/.local/bin/zolly`).
-`zolly close`'s self-rebuild step then **skips** rather than fails: installed
-projects have no local tool source, so they use the shared binary.
+The Rust tool source lives in `tool/`. A project installs the shared binary once
+from it (the installer finds the crate automatically; `ZOLLY_TOOL_DIR=<crate>`
+overrides, or use a prebuilt `~/.local/bin/zolly`). `zolly close`'s self-rebuild
+step then **skips** rather than fails: installed projects have no local tool
+source, so they use the shared binary.
