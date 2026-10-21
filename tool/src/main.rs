@@ -572,8 +572,17 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     let foreman_label = format!("foreman@{}", office.frequency);
     let reviewer_label = format!("pr-reviewer@{}", office.frequency);
     let agents = herdr.agent_list().context("Failed to list agents")?;
-    let has_foreman = agents.iter().any(|a| a.name.as_deref() == Some(foreman.as_str()));
-    let has_reviewer = agents.iter().any(|a| a.name.as_deref() == Some(reviewer.as_str()));
+    let mut has_foreman = agents.iter().any(|a| a.name.as_deref() == Some(foreman.as_str()));
+    let mut has_reviewer = agents.iter().any(|a| a.name.as_deref() == Some(reviewer.as_str()));
+    // A seat can be live but unnamed: its omp is running in the right tab,
+    // herdr has no name for it, and the next `init` would start a duplicate.
+    // Adopt it by tab label before opening anything.
+    if !has_foreman && adopt_seat(herdr, &office, "foreman", &foreman_label) {
+        has_foreman = true;
+    }
+    if !has_reviewer && adopt_seat(herdr, &office, "pr-reviewer", &reviewer_label) {
+        has_reviewer = true;
+    }
 
     if has_foreman && has_reviewer {
         println!("Foreman and pr-reviewer already running");
@@ -656,6 +665,29 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
 /// shell, then start the agent with its boot prompt and persona as launch
 /// arguments. Passing them at launch (measured 3.0s per seat) beats starting
 /// omp empty and then prompting it (the turn-start wait cost ~6s more).
+/// Rename an already-running omp in the seat's tab to the expected agent name.
+/// True only when the rename succeeded.
+fn adopt_seat(herdr: &herdr::HerdrClient, office: &Office, handle: &str, label: &str) -> bool {
+    let Ok(tabs) = herdr.tab_list() else {
+        return false;
+    };
+    let Some(tab) = tabs.iter().find(|tab| tab.label == label) else {
+        return false;
+    };
+    let Ok(panes) = herdr.pane_list() else {
+        return false;
+    };
+    let Some(pane) = panes
+        .iter()
+        .find(|pane| pane.tab_id.as_deref() == Some(tab.tab_id.as_str()) && pane.agent.is_some())
+    else {
+        return false;
+    };
+    herdr
+        .agent_rename(&pane.pane_id, &office.agent(handle))
+        .is_ok()
+}
+
 fn open_seat(
     herdr: &herdr::HerdrClient,
     office: &Office,

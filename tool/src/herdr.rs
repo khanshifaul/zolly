@@ -10,6 +10,8 @@ pub struct HerdrAgent {
     pub pane_id: String,
     pub tab_id: Option<String>,
     pub agent_status: String,
+    #[serde(default)]
+    pub cwd: String,
     #[serde(rename = "agent_session")]
     pub agent_session: Option<AgentSession>,
 }
@@ -1220,9 +1222,19 @@ impl HerdrClient {
             .filter(|p| p.workspace_id == workspace)
             .map(|p| p.pane_id.as_str())
             .collect();
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         Ok(agents
             .into_iter()
-            .filter(|a| panes.contains(a.pane_id.as_str()))
+            .filter(|a| {
+                // A worker lives in a worktree workspace, not the office
+                // workspace. Its cwd is still under the office root; use that
+                // as the second boundary so the pulse does not lose it.
+                let under_root = Path::new(&a.cwd)
+                    .canonicalize()
+                    .map(|cwd| cwd.starts_with(&root))
+                    .unwrap_or(false);
+                panes.contains(a.pane_id.as_str()) || under_root
+            })
             .collect())
     }
 

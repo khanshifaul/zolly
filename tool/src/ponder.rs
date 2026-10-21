@@ -35,9 +35,23 @@ struct Focus {
 
 pub fn run(root: &Path, force: bool, wake: bool) -> Result<Ponder> {
     let signals = curious::inspect(root)?;
-    // herdr may be down (timer during a session restart). Queue depth is still
-    // readable; treat the rest as zero rather than failing the timer.
-    let brief = crate::brief::generate_brief(root).ok();
+    // A missing brief means the office state is unknown. Do not guess "idle"
+    // from queue depth alone: that is how a worker in a worktree gets stepped
+    // on. `--force` is the explicit override.
+    let brief = match crate::brief::generate_brief(root) {
+        Ok(brief) => Some(brief),
+        Err(error) if !force => {
+            return Ok(Ponder {
+                focus: "none".into(),
+                reasons: vec![format!("office state unavailable: {error}")],
+                signals,
+                written: None,
+                skipped: Some("brief unavailable".into()),
+                waked: None,
+            })
+        }
+        Err(_) => None,
+    };
     let workers = brief.as_ref().map(|b| b.waiting.workers).unwrap_or(0);
     let gates = brief.as_ref().map(|b| b.gates.len()).unwrap_or(0);
     let stalled = brief

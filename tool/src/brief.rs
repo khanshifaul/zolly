@@ -79,7 +79,11 @@ fn now_secs() -> u64 {
 }
 
 fn is_manager(name: &str) -> bool {
-    MANAGER_NAMES.iter().any(|m| *m == name)
+    // Agent names carry the frequency (`foreman-guzia-high-school`); the bare
+    // handles in MANAGER_NAMES are the radio handles, not the herdr names.
+    MANAGER_NAMES
+        .iter()
+        .any(|m| *m == name || name.starts_with(&format!("{m}-")))
 }
 
 /// Is this herdr agent a live worker *right now*?
@@ -454,11 +458,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manager_names_are_recognised() {
+    fn manager_names_are_recognised_with_the_frequency_suffix() {
         assert!(is_manager("zolly"));
         assert!(is_manager("foreman"));
         assert!(is_manager("pr-reviewer"));
+        assert!(is_manager("zolly-zylosync"));
+        assert!(is_manager("foreman-guzia-high-school"));
+        assert!(is_manager("pr-reviewer-pijunctionbd"));
         assert!(!is_manager("worker-fix-1"));
+        assert!(!is_manager("worker-zylosync-t-project-truths"));
         assert!(!is_manager("weld"));
     }
 
