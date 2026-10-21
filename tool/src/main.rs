@@ -1869,25 +1869,35 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
     // wrote into it (result files, tool source edits, stray stamps). That is not
     // a divergence — list the files so the reader sees what blocks them.
     let repo = main_checkout(root);
-    match main_dirty_files(&repo) {
-        Ok(dirty) if dirty.is_empty() => checks.push(Check {
+    if !git_ok(&repo, &["rev-parse", "--verify", "HEAD"]) {
+        // A fresh office has no HEAD; every file is untracked by definition.
+        // Calling that "uncommitted changes" is noise, not a defect.
+        checks.push(Check {
             name: "main-clean",
             ok: true,
-            detail: "main checkout has no uncommitted changes".into(),
-        }),
-        Ok(dirty) => checks.push(Check {
-            name: "main-clean",
-            ok: false,
-            detail: format!(
-                "main checkout has uncommitted changes — {}",
-                dirty.join(", ")
-            ),
-        }),
-        Err(e) => checks.push(Check {
-            name: "main-clean",
-            ok: false,
-            detail: format!("cannot check main cleanliness: {e}"),
-        }),
+            detail: "no commits yet — nothing to compare".into(),
+        });
+    } else {
+        match main_dirty_files(&repo) {
+            Ok(dirty) if dirty.is_empty() => checks.push(Check {
+                name: "main-clean",
+                ok: true,
+                detail: "main checkout has no uncommitted changes".into(),
+            }),
+            Ok(dirty) => checks.push(Check {
+                name: "main-clean",
+                ok: false,
+                detail: format!(
+                    "main checkout has uncommitted changes — {}",
+                    dirty.join(", ")
+                ),
+            }),
+            Err(e) => checks.push(Check {
+                name: "main-clean",
+                ok: false,
+                detail: format!("cannot check main cleanliness: {e}"),
+            }),
+        }
     }
     // 2. Dead commands: foreman dispatcher script (informational, L-0005).
     if root.join(".agents/foreman/foreman").exists() {
@@ -1956,10 +1966,12 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
     // value and they disagree, the serve bot and a shell-run bot can be
     // different bots — a real trap, so this is a failure, not a warning.
     let shell_env = read_env_file(&root.join(".agents/zolly/.env"));
-    let creds_env = read_env_file(
-        &std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join(".config/zolly/credentials"),
-    );
+    let creds_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".config/zolly")
+        .join(&office.frequency)
+        .join("credentials");
+    let creds_env = read_env_file(&creds_path);
     let mut drift: Vec<String> = Vec::new();
     for key in ["ZOLLY_TELEGRAM_TOKEN", "ZOLLY_ALLOWED_IDS"] {
         if let (Some(a), Some(b)) = (shell_env.get(key), creds_env.get(key)) {
@@ -1982,39 +1994,52 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
         });
     }
 
-    // 6. Systemd unit is running.
+    // 6. Systemd unit. A listener that was never configured is not broken:
+    //    Telegram is optional, and the installer writes no unit without a
+    //    token and an allow-list.
+    let configured = ["ZOLLY_TELEGRAM_TOKEN", "ZOLLY_ALLOWED_IDS"].iter().all(|key| {
+        let present = |map: &std::collections::HashMap<String, String>| {
+            map.get(*key).map(|v| !v.is_empty()).unwrap_or(false)
+        };
+        present(&creds_env) || present(&shell_env)
+    });
     let unit = office.unit();
-    match std::process::Command::new("systemctl")
-        .args(["--user", "is-active", &unit])
-        .output()
-    {
-        Ok(out) => {
-            let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if state == "active" {
-                checks.push(Check {
-                    name: "systemd",
-                    ok: true,
-                    detail: format!("{unit} is active"),
-                });
-            } else if state == "inactive" || state == "failed" {
-                checks.push(Check {
-                    name: "systemd",
-                    ok: false,
-                    detail: format!("{unit} is {} — telegram bot is not listening", state),
-                });
-            } else {
-                checks.push(Check {
-                    name: "systemd",
-                    ok: true,
-                    detail: format!("{unit} state = {}", state),
-                });
-            }
-        }
-        Err(e) => checks.push(Check {
+    if !configured {
+        checks.push(Check {
             name: "systemd",
             ok: true,
-            detail: format!("could not check systemd ({}); skipping", e),
-        }),
+            detail: format!("no listener ({unit} not configured)"),
+        });
+    } else {
+        let loaded = std::process::Command::new("systemctl")
+            .args(["--user", "show", "-p", "LoadState", "--value", &unit])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "loaded")
+            .unwrap_or(false);
+        let state = std::process::Command::new("systemctl")
+            .args(["--user", "is-active", &unit])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if !loaded {
+            checks.push(Check {
+                name: "systemd",
+                ok: false,
+                detail: format!("{unit} is not installed — re-run the installer with --force"),
+            });
+        } else if state == "active" {
+            checks.push(Check {
+                name: "systemd",
+                ok: true,
+                detail: format!("{unit} is active"),
+            });
+        } else {
+            checks.push(Check {
+                name: "systemd",
+                ok: false,
+                detail: format!("{unit} is {state} — telegram bot is not listening"),
+            });
+        }
     }
 
     // 7. Seat on the bus: every office seat must have a live handle on this

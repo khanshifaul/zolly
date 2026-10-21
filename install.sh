@@ -450,6 +450,7 @@ else
   # can have one after tests; a git archive cannot.
   find "$AGENTS_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   find "$AGENTS_DIR" -type f -name '*.pyc' -exec rm -f {} + 2>/dev/null || true
+  ok "copied office kit"
 
   if [ -n "$BACKUP" ]; then
     # Restore what the office cannot regenerate. The template's copies are
@@ -478,7 +479,6 @@ else
       ok "restored the tool source"
     fi
   fi
-  ok "copied office kit"
 fi
 
 # ---------------------------------------------------------------------------
