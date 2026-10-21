@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use reqwest::Client;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::config::{
@@ -431,9 +431,12 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
     Ok(())
 }
 
-/// Download a voice note from Telegram and transcribe it via the local
-/// faster-whisper model (stt.py). Returns the transcript, or an error the
-/// caller can surface to the founder.
+/// Download a voice note from Telegram and transcribe it locally.
+///
+/// Telegram delivers OGG/Opus; voxtype takes 16 kHz mono WAV, so ffmpeg
+/// converts first. The engine is Parakeet, and `parakeet-redux` is selected by
+/// path because voxtype's catalog does not list downloaded directory models.
+/// `ZOLLY_STT_MODEL` overrides the model with a name or a directory.
 pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
     let client = get_client();
 
@@ -471,37 +474,59 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
         .await
         .map_err(|e| RequestFailure::from_reqwest("voice file read failed", &e))?;
 
-    let tmp =
-        std::env::temp_dir().join(format!("zolly_voice_{}.ogg", std::process::id()));
+    let tmp = unique_temp("ogg");
     std::fs::write(&tmp, &audio).context("failed to write temp voice file")?;
-    // 3. Transcribe via stt.py using the pinned stt venv interpreter (never
-    // the implicit `python3`, which may lack numpy/faster-whisper).
-    let stt_script = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("stt.py")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| std::path::PathBuf::from(".agents/zolly/tool/stt.py"));
-    let venv_python = stt_script
-        .parent()
-        .map(|d| d.join(".venv-stt/bin/python3"))
-        .filter(|p| p.exists());
-    let interpreter = venv_python.as_deref().unwrap_or(std::path::Path::new("python3"));
+    let wav = tmp.with_extension("wav");
 
-    let output = tokio::process::Command::new(interpreter)
-        .arg(&stt_script)
+    // 3. Decode to the only format voxtype accepts.
+    let convert = tokio::process::Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-i"])
         .arg(&tmp)
+        .args(["-ar", "16000", "-ac", "1"])
+        .arg(&wav)
         .output()
-        .await
-        .context("failed to run stt.py")?;
-
-    // Cleanup temp file (best-effort)
+        .await;
     let _ = std::fs::remove_file(&tmp);
+    let convert = match convert {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("voice transcription unavailable: ffmpeg is not installed")
+        }
+        Err(e) => return Err(e).context("failed to run ffmpeg"),
+    };
+    if !convert.status.success() {
+        let err = stt_error_line(&convert.stderr);
+        let _ = std::fs::remove_file(&wav);
+        anyhow::bail!(
+            "voice transcription unavailable: ffmpeg could not decode the note: {}",
+            err
+        );
+    }
+
+    // 4. Transcribe. `--model` is global, so it must precede the subcommand.
+    let mut command = tokio::process::Command::new("voxtype");
+    if let Some(model) = stt_model() {
+        command.arg("--model").arg(model);
+    }
+    let output = command
+        .args(["transcribe", "--engine", "parakeet"])
+        .arg(&wav)
+        .output()
+        .await;
+    let _ = std::fs::remove_file(&wav);
+    let output = match output {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("voice transcription unavailable: voxtype is not installed")
+        }
+        Err(e) => return Err(e).context("failed to run voxtype"),
+    };
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // stt.py already emits a clean one-line message; surface it as-is so
-        // the founder never sees a raw traceback.
-        anyhow::bail!("voice transcription unavailable: {}", stderr.trim());
+        anyhow::bail!(
+            "voice transcription unavailable: {}",
+            stt_error_line(&output.stderr)
+        );
     }
 
     let transcript = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -509,6 +534,60 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
         anyhow::bail!("transcription produced no text (audio may be silent)");
     }
     Ok(transcript)
+}
+
+/// The model voxtype should load.
+///
+/// `ZOLLY_STT_MODEL` wins — a name or a directory. Otherwise the
+/// `parakeet-redux` directory under voxtype's XDG data dir, where downloaded
+/// models live; `None` lets voxtype use its configured Parakeet model.
+fn stt_model() -> Option<PathBuf> {
+    stt_model_with(
+        std::env::var("ZOLLY_STT_MODEL").ok().as_deref(),
+        dirs::data_dir().as_deref(),
+    )
+}
+
+fn stt_model_with(explicit: Option<&str>, data_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(value) = explicit {
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(PathBuf::from(value));
+        }
+    }
+    data_dir
+        .map(|dir| dir.join("voxtype/models/parakeet-redux"))
+        .filter(|path| path.is_dir())
+}
+
+/// One line for the founder. voxtype logs INFO lines to stderr even on
+/// success; on failure the last non-empty line is the `Error:` line.
+fn stt_error_line(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "no error output".to_string())
+}
+
+/// A temp path unique per process and call: webhook deliveries can transcribe
+/// concurrently with the poll loop.
+fn unique_temp(ext: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "zolly_voice_{}_{}_{}.{}",
+        std::process::id(),
+        nanos,
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        ext
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -622,5 +701,43 @@ mod voice_tests {
         let expected = format!("🎤 Voice (text fallback):\n{}", message);
         assert_eq!(expected, "🎤 Voice (text fallback):\nhello founder");
         assert!(expected.starts_with("🎤 Voice (text fallback):\n"));
+    }
+}
+
+#[cfg(test)]
+mod stt_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_model_wins_and_blank_is_ignored() {
+        assert_eq!(
+            stt_model_with(Some("some-model"), Some(Path::new("/does/not/exist"))),
+            Some(PathBuf::from("some-model"))
+        );
+        assert_eq!(stt_model_with(Some("   "), None), None);
+    }
+
+    #[test]
+    fn redux_is_found_in_the_voxtype_data_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "zolly-stt-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let model = root.join("voxtype/models/parakeet-redux");
+        std::fs::create_dir_all(&model).expect("create test model dir");
+        assert_eq!(stt_model_with(None, Some(&root)), Some(model));
+        std::fs::remove_dir_all(&root).expect("remove test model dir");
+        assert_eq!(stt_model_with(None, Some(&root)), None);
+    }
+
+    #[test]
+    fn the_founder_sees_the_last_error_line() {
+        let stderr = b"2026-10-21T14:00:00Z INFO Loading model\nError: Unknown model 'x'\n\n";
+        assert_eq!(stt_error_line(stderr), "Error: Unknown model 'x'");
+        assert_eq!(stt_error_line(b""), "no error output");
     }
 }

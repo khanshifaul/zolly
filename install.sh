@@ -780,10 +780,9 @@ else
       ( cd "$TOOL_DIR" && cargo build --release ) || die "cargo build failed in $TOOL_DIR"
       mkdir -p "$(dirname "$BIN_DEST")"
       install -m 0755 "$TOOL_DIR/target/release/zolly" "$BIN_DEST"
-      # Voice transcription resolves stt.py beside the binary first; the
-      # office-local fallback no longer exists now that the crate lives in
-      # the kit. Best-effort: voice is optional and config-gated.
-      [ -f "$TOOL_DIR/stt.py" ] && install -m 0644 "$TOOL_DIR/stt.py" "$(dirname "$BIN_DEST")/stt.py"
+      # Older installs put the faster-whisper helper beside the binary;
+      # voxtype replaced it, so a stale copy is dead weight.
+      rm -f "$(dirname "$BIN_DEST")/stt.py"
       ok "installed $BIN_DEST"
       BIN_STATE="installed"
     fi

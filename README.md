@@ -157,6 +157,10 @@ project     = "My App"     # display name (the installer writes the directory na
 Env overrides: `ZOLLY_FREQUENCY`, `ZOLLY_FOUNDER`, `ZOLLY_BASE_BRANCH`,
 `ZOLLY_REMOTE`, `ZOLLY_VOICE`, `ZOLLY_PROJECT`.
 
+Inbound voice notes are transcribed locally with `voxtype` (the
+`parakeet-redux` model; override with `ZOLLY_STT_MODEL`) and `ffmpeg`. Outbound
+voice replies additionally need Piper; `voice = false` keeps replies textual.
+
 `frequency` is the machine identifier; `project` is what the founder calls the
 thing. The installer sets the frequency from `--name` (default: the directory
 name) and the project name to the directory name, so they differ only when
