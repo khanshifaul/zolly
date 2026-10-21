@@ -276,6 +276,13 @@ fn seat(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
         &office.frequency,
     );
 
+    // One command boots the office. `init` is idempotent, and the manager's
+    // persona still re-checks it, so a manual `zolly init` is only for
+    // re-opening a seat that was closed.
+    if let Err(e) = init(herdr, root) {
+        eprintln!("zolly: could not open the seats: {e:#}");
+    }
+
     println!("Seating {} for {}", office.agent("zolly"), office.project);
     let status = std::process::Command::new("omp")
         .arg(format!("@{}", persona.display()))

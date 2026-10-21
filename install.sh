@@ -1022,9 +1022,8 @@ fi
 say ""
 heading "Next steps:"
 note "cd $TARGET"
-note "zolly doctor    # check the office"
-note "zolly init      # foreman + pr-reviewer"
-note "zolly           # sit down as the manager"
+note "zolly doctor    # optional check"
+note "zolly           # manager + foreman + pr-reviewer"
 if [ "$UNBORN" -eq 1 ]; then
   say ""
   note "no commits yet — commit before dispatching (branches cut from '$BASE_BRANCH')."

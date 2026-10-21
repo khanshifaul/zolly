@@ -44,6 +44,8 @@ by label; creating it when the project has none) and opens the foreman +
 pr-reviewer tabs **there**, delivering each seat's
 **boot prompt first, then its `agent.md`**. Idempotent: never restart a seat
 mid-review. If either FAILED to start, say so before greeting.
+Bare `zolly` runs this before the manager starts; use the command by hand only
+to re-open a seat that was closed.
 
 Every herdr agent name carries the frequency, the manager's included:
 `zolly-{{FREQUENCY}}`, `foreman-{{FREQUENCY}}`, `pr-reviewer-{{FREQUENCY}}`.

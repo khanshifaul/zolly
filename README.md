@@ -229,17 +229,15 @@ follow-ups and lets you run them.
 
 ```sh
 cd <target-dir>
-zolly doctor      # the acceptance test: all green
-zolly init        # start the foreman and pr-reviewer seats
+zolly doctor      # optional: every check green
+zolly             # boots the office: foreman + pr-reviewer, then the manager
 ```
 
-`zolly init` opens two seats, joins them to the project's radio frequency, and
-delivers each seat's boot prompt followed by its persona.
-
-Then sit down. In the project, bare `zolly` joins the office's bus and starts
-`omp` with the manager persona (`@.agents/zolly/agent.md`). `zolly <command>`
-still runs the CLI, and bare `zolly` outside an office says so instead of
-seating.
+Bare `zolly` seats the office: it opens the foreman and pr-reviewer tabs in
+the project's herdr workspace (idempotent), joins them to the radio frequency,
+then starts `omp` with the manager persona (`@.agents/zolly/agent.md`).
+`zolly init` still exists to re-open a seat that was closed. `zolly <command>`
+runs the CLI, and bare `zolly` outside an office says so instead of seating.
 
 The installer no longer prints a shell block for `~/.zshrc`: the seat lives in
 the binary, so it works in any shell, in a script, and in a fresh terminal.
