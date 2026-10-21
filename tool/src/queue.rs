@@ -267,6 +267,45 @@ pub fn read_queue(root: &Path) -> Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
+/// The canonical result files for this office: one per task, preferring the
+/// branch copy inside `.agents/worktrees/<id>/` over the main-checkout copy.
+/// A task with a worktree has its authoritative file there; the main copy may
+/// be stale, so it is not also returned.
+pub fn result_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut covered = std::collections::HashSet::new();
+    let worktrees = root.join(".agents/worktrees");
+    if let Ok(entries) = fs::read_dir(&worktrees) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            covered.insert(format!("{id}.md"));
+            let path = entry.path().join(".agents/results").join(format!("{id}.md"));
+            if path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    let results = root.join(".agents/results");
+    if let Ok(entries) = fs::read_dir(&results) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if covered.contains(&name) {
+                continue;
+            }
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Display name of a queue path: the file name including `.md`, matching
 /// how results and gates are shown everywhere else.
 pub fn display_name(path: &Path) -> String {
