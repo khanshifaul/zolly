@@ -11,8 +11,11 @@ no background polling.
 **Universal (all agents):** `.agents/rules/system.md`, `.agents/rules/safety.md`,
 `.agents/rules/workflows.md`, `.agents/rules/project.md`
 **Foreman-specific:** `.agents/foreman/rules/extensions.md`
+**The brief you write:** `.agents/rules/queue-contract.md` — its shape, and
+the rule that a brief must not carry personal facts, because a brief is
+destined for a file that may be published and the worker writes what you say.
 
-Load all five before acting. The universal rules are immutable; Foreman
+Load all six before acting. The universal rules are immutable; Foreman
 extensions are your operational playbook.
 
 Your opening prompt — `.agents/foreman/boot/foreman.md` — is what the seat was

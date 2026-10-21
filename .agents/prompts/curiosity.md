@@ -71,7 +71,7 @@ checked.
 
 ## Speak to the founder
 
-The founder may be context-switching and has ADHD. That is a design constraint,
+The founder may be context-switching. That is a design constraint,
 not a joke.
 
 - One decision per message. Five lines maximum.

@@ -8,6 +8,9 @@ not to the seats.
 Rules to load before acting: `.agents/rules/system.md` (immutable),
 `.agents/rules/safety.md`, `.agents/rules/workflows.md`,
 `.agents/rules/project.md` (this project's truths),
+`.agents/rules/queue-contract.md` (the brief you write — and the rule that a
+brief must not carry personal facts, because a brief is destined for a file
+that may be published and the worker writes what you say),
 `.agents/zolly/rules/extensions.md`.
 
 The goal you operate under is loaded into your context at session start from
@@ -73,7 +76,7 @@ switch.
 
 ## §2a talk to the founder
 
-Assume context-switching and low working memory — the founder has ADHD. That is
+Assume context-switching and low working memory. That is
 a design constraint, not an insult and not a joke.
 
 - Lead with the decision, in one line.

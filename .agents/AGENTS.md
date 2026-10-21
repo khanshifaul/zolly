@@ -148,7 +148,7 @@ register; a file with no row is a file nobody opens.
 | `rules/learned.md` | any agent promoting a learning | named in `prompts/post_task_reflect.md` |
 | `rules/csv-conventions.md` | any worker writing a CSV | named in `rules/workflows.md` and `worker/generic.md` |
 | `rules/result-contract.md` | every worker and reviewer | named in `rules/workflows.md`, `worker/generic.md`, `reviewer/agent.md` |
-| `rules/queue-contract.md` | the manager and the foreman | named in `rules/workflows.md` and `zolly/skills/close-the-day/SKILL.md` |
+| `rules/queue-contract.md` | the manager and the foreman | named in `rules/workflows.md`, the `zolly` and `foreman` personas, and `zolly/skills/close-the-day/SKILL.md` |
 | `prompts/task_triage.md` | the manager, on each instruction | named in `zolly/agent.md` |
 | `prompts/post_task_reflect.md` | any agent closing a unit of work | named in `zolly/rules/extensions.md` and `worker/generic.md` |
 | `prompts/curiosity.md` | the manager, when the queue is empty | named in `rules/workflows.md` and `zolly/agent.md` |
