@@ -74,6 +74,7 @@ installer, no download.
 |---|---|
 | `~/.local/bin/zolly` | the shared binary, installed once |
 | `<project>/.agents/` | the office kit: rules, personas, memory, prompts, skills |
+| `<project>/.omp/mcp.json` | this office's MCP entry (written by the installer, gitignored) |
 | `~/.config/zolly/<freq>/credentials` | the Telegram token, allowed ids and the founder's handle — machine-local, never in the repo |
 | `~/.config/systemd/user/zolly-<freq>.service` | the Telegram listener for that project |
 
@@ -110,10 +111,11 @@ independently; nothing is shared except the `~/.local/bin/zolly` binary.
    Telegram answers `409 Conflict` — only one receives updates. Use a distinct
    bot per office, or run one listener and route.
 2. **MCP registration.** There is one deployed `zolly-mcp`, but the client
-   entry must be per office: `ZOLLY_MCP_AGENT=zolly-<freq>`,
-   `ZOLLY_ROOT=<project>`. The installer prints the entry keyed
-   `zolly-<freq>`; register one entry per office under a distinct key. A single
-   unqualified `zolly` entry reaches only one office.
+   entry is per office: `ZOLLY_MCP_AGENT=zolly-<freq>`, `ZOLLY_ROOT=<project>`.
+   The installer writes it to the project's `.omp/mcp.json` (a key
+   `zolly-<freq>`), which omp reads before the user scope; the file names this
+   machine's binary path, so it is gitignored. A single unqualified `zolly`
+   entry in `~/.omp/agent/mcp.json` would reach only one office.
 
 Frequency collisions (e.g. `guzia-high-school` vs `Guzia High School`) are
 refused by the installer, so unit and credential paths cannot silently override
@@ -188,7 +190,7 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 | `--remote <r>` | git remote (default: `origin`) |
 | `--no-systemd` | do not write a systemd user unit |
 | `--no-binary` | do not install the shared binary |
-| `--no-mcp` | do not deploy the MCP server |
+| `--no-mcp` | do not deploy or register the MCP server |
 | `--no-telegram` | do not configure Telegram for this office |
 | `--yes`, `-y` | accept every default; ask nothing |
 | `--force` | install even if the target already has `.agents/` |

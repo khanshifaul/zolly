@@ -42,7 +42,7 @@ Pass `wait_submit_ms: 0` for a pure fire-and-forget that only reports the ack.
 |---|---|
 |`zolly_mcp.py`|the server — stdlib only, no third-party imports|
 |`test_mcp.py`|a stdio client: `handshake`, `status`, `say "text"`|
-|`install.sh`|copies `zolly_mcp.py` to `~/.local/bin/zolly-mcp` and prints the mcp.json entry|
+|`install.sh`|copies `zolly_mcp.py` to `~/.local/bin/zolly-mcp` and merges the office's entry into `<project>/.omp/mcp.json`|
 
 ## Bounds and binding
 
@@ -64,14 +64,18 @@ project config resolves.
 ## Install
 
 ```sh
-.agents/zolly/mcp/install.sh          # installs to ~/.local/bin/zolly-mcp
+.agents/zolly/mcp/install.sh \
+  --frequency <freq> --root <repo> --write <repo>
 ```
 
-Then add the printed entry to `~/.omp/agent/mcp.json` under `mcpServers`.
-That file is harness config **shared by every omp pane** — read it first, add one
-entry, leave the other entries untouched, keep it valid JSON. The entry is keyed
-per office (`zolly-<frequency>`), because one unqualified `zolly` entry can only
-reach one office; a second project needs its own entry under its own key.
+That deploys the server and merges `mcpServers["zolly-<freq>"]` into
+`<repo>/.omp/mcp.json` — omp's project-scoped config, which wins over the user
+scope. The merge edits only that key: every other server and top-level key in
+the file is left as it was. The entry names this machine's binary path, so the
+installer gitignores the file. Without `--write` the entry is printed for a
+manual merge into `~/.omp/agent/mcp.json`, which is harness config **shared by
+every omp pane** — one entry per office, keyed `zolly-<frequency>`, because one
+unqualified `zolly` reaches only one office.
 
 ## Verify a handshake (not just "the entry exists")
 

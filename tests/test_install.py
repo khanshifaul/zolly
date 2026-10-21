@@ -7,6 +7,7 @@ throwaway HOME, so no machine-level state is touched. `--no-binary` and
 run non-interactive, and one test drives the prompts on a real pty.
 """
 
+import json
 import os
 import pty
 import select
@@ -324,6 +325,39 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         creds = (self.home / ".config" / "zolly" / "app" / "credentials").read_text(encoding="utf-8")
         self.assertIn("ZOLLY_FOUNDER_USERNAME=khanshifaul\n", creds)
+
+    def test_mcp_is_registered_in_the_project(self):
+        # omp reads .omp/mcp.json at the project scope, so the installer
+        # writes the entry instead of asking the founder to paste it into
+        # ~/.omp/agent/mcp.json — and the entry is machine-local, so ignored.
+        repo = self.make_repo("app")
+        result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads((repo / ".omp" / "mcp.json").read_text(encoding="utf-8"))
+        entry = config["mcpServers"]["zolly-app"]
+        self.assertEqual(entry["command"], str(self.home / ".local" / "bin" / "zolly-mcp"))
+        self.assertEqual(entry["env"]["ZOLLY_MCP_AGENT"], "zolly-app")
+        self.assertEqual(entry["env"]["ZOLLY_ROOT"], str(repo))
+        self.assertIn(".omp/mcp.json", (repo / ".gitignore").read_text(encoding="utf-8"))
+
+    def test_mcp_registration_merges_into_an_existing_file(self):
+        repo = self.make_repo("app")
+        (repo / ".omp").mkdir()
+        (repo / ".omp" / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"other": {"type": "stdio", "command": "x"}}}),
+            encoding="utf-8",
+        )
+        result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads((repo / ".omp" / "mcp.json").read_text(encoding="utf-8"))
+        self.assertIn("other", config["mcpServers"])
+        self.assertIn("zolly-app", config["mcpServers"])
+
+    def test_no_mcp_skips_project_registration(self):
+        repo = self.make_repo("app")
+        result = self.install(repo, "--no-mcp")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((repo / ".omp" / "mcp.json").exists())
 
     def test_yes_installs_with_defaults_and_asks_nothing(self):
         repo = self.make_repo("app")

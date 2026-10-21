@@ -26,7 +26,7 @@
 #   --remote <r>        git remote (default: origin)
 #   --no-systemd        do not write a systemd user unit
 #   --no-binary         do not install the shared binary
-#   --no-mcp            do not deploy the MCP server
+#   --no-mcp            do not deploy or register the MCP server
 #   --no-telegram       do not configure Telegram
 #   --yes, -y           accept every default; ask nothing
 #   --force             install even if the target already has .agents/
@@ -719,6 +719,16 @@ EOF
   else
     ok "runtime gitignore entries already present"
   fi
+  # omp's project MCP entry names this machine's zolly-mcp binary and this
+  # office's seat, so it is per machine, like the credentials — never committed.
+  if ! grep -qxF '.omp/mcp.json' "$GITIGNORE" 2>/dev/null; then
+    cat >> "$GITIGNORE" <<'EOF'
+
+# Zolly: omp project MCP registration (absolute zolly-mcp path, per office).
+.omp/mcp.json
+EOF
+    ok ".omp/mcp.json ignored"
+  fi
   ok "runtime directories created"
 fi
 
@@ -763,6 +773,7 @@ fi
 MCP_SRC="$AGENTS_DIR/zolly/mcp/zolly_mcp.py"
 MCP_INSTALLER="$AGENTS_DIR/zolly/mcp/install.sh"
 MCP_DEST="${ZOLLY_MCP_DEST:-$HOME/.local/bin/zolly-mcp}"
+MCP_PROJECT_FILE="$TARGET/.omp/mcp.json"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   # Nothing was copied, so check the template rather than the target.
@@ -777,15 +788,24 @@ elif [ "$DO_MCP" -ne 1 ]; then
 elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
   ok "MCP server already deployed and identical: $MCP_DEST"
   MCP_STATE="installed"
-elif [ "$(ask_yn "Deploy the MCP server to $MCP_DEST and print this office's client entry?" y)" = n ]; then
+  # The registration is per project, so it is ensured even when the binary is
+  # current — a re-run is what upgrades an office installed before this file.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "would write $MCP_PROJECT_FILE"
+  else
+    sh "$MCP_INSTALLER" "$MCP_DEST" --frequency "$FREQ" --root "$TARGET" --write "$TARGET" >/dev/null
+    ok "MCP registered for this project: $MCP_PROJECT_FILE"
+  fi
+elif [ "$(ask_yn "Deploy the MCP server to $MCP_DEST and register it in $MCP_PROJECT_FILE?" y)" = n ]; then
   skip "MCP (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would deploy the MCP server to $MCP_DEST"
+  say "would write $MCP_PROJECT_FILE"
   MCP_STATE="planned"
 else
-  # One deployer, not two. The component prints the canonical mcp.json entry;
-  # a copy of that text here is how the two installers drift apart.
-  sh "$MCP_INSTALLER" "$MCP_DEST" --frequency "$FREQ" --root "$TARGET"
+  # One deployer, not two. The component owns the entry's shape and merges it
+  # into the project file; a copy of that JSON here is how the two drift apart.
+  sh "$MCP_INSTALLER" "$MCP_DEST" --frequency "$FREQ" --root "$TARGET" --write "$TARGET"
   MCP_STATE="installed"
 fi
 
