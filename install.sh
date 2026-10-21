@@ -936,9 +936,17 @@ else
   fi
 fi
 
-if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ] && [ -n "$IDS" ]; then
-  HAVE_CREDS=1
-  TG_STATE="configured"
+if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
+  if [ -n "$IDS" ]; then
+    HAVE_CREDS=1
+    TG_STATE="configured"
+  else
+    # Keep the token the founder just typed. The chat id arrives with the
+    # first message, and a --force re-run discovers it; discarding a token
+    # here made them hunt down BotFather again. No listener is written until
+    # both are present, so a token alone is inert.
+    TG_STATE="token-only"
+  fi
   if [ "$DRY_RUN" -eq 1 ]; then
     say "would write $CRED_FILE"
   else
@@ -959,10 +967,14 @@ EOF
       mv -f "$tmp" "$CRED_FILE"
       trap - EXIT HUP INT TERM
     )
-    ok "credentials written: $CRED_FILE"
+    if [ "$HAVE_CREDS" -eq 1 ]; then
+      ok "credentials written: $CRED_FILE"
+    else
+      skip "Telegram listener (token saved, no chat id yet) — message the bot, then re-run --force"
+    fi
   fi
 elif [ "$WANT_TELEGRAM" -eq 1 ]; then
-  skip "credentials (no token and ids) — add them later at $CRED_FILE"
+  skip "credentials (no token) — add them later at $CRED_FILE"
 fi
 
 # ---------------------------------------------------------------------------

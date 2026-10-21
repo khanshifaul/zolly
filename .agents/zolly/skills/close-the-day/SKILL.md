@@ -34,7 +34,7 @@ measurement that mutates the thing it measures is not a measurement.
 git log --oneline -N {{BASE_BRANCH}}
 git status --porcelain
 git rev-list --count {{BASE_BRANCH}}..{{REMOTE}}/{{BASE_BRANCH}}
-zolly pulse
+zolly brief
 herdr agent list
 git log --since='2 hours ago' --oneline | wc -l
 ls .agents/runs/*.run

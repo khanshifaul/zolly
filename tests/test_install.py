@@ -178,6 +178,24 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"would build {ROOT / 'tool'}", result.stdout)
 
+    def test_token_without_chat_id_is_kept(self):
+        # A token typed before the bot has ever been messaged used to be
+        # thrown away, so the founder had to fetch it from BotFather again.
+        repo = self.make_repo("app")
+        env = dict(self.env, ZOLLY_TELEGRAM_TOKEN="123456:ABCdef")
+        result = subprocess.run(
+            [str(INSTALL), str(repo), "--no-binary", "--yes", "--founder", "Test"],
+            env=env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("token saved, no chat id yet", result.stdout)
+        creds = (self.home / ".config" / "zolly" / "app" / "credentials").read_text(encoding="utf-8")
+        self.assertIn("ZOLLY_TELEGRAM_TOKEN=123456:ABCdef\n", creds)
+        self.assertIn("ZOLLY_ALLOWED_IDS=\n", creds)
+        units = self.home / ".config" / "systemd" / "user"
+        self.assertFalse(units.exists(), "no listener without a chat id")
+
     def test_empty_folder_without_git_is_refused(self):
         repo = self.root / "blank"
         repo.mkdir()

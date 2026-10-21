@@ -30,7 +30,7 @@ A brief the founder does not finish reading is a brief that did not happen.
 
 ## Pulse — measure, never recall
 
-- `zolly pulse [--json]` for the office read — ledger-tracked workers, stalls,
+- `zolly brief [--json]` for the office read — ledger-tracked workers, stalls,
   fresh results, worktree count
 - `herdr agent list` for live agents with their panes and statuses
 - `git log --since='2 hours ago' --oneline | wc -l` for velocity

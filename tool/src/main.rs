@@ -27,6 +27,9 @@ enum Commands {
         json: bool,
     },
     /// The same brief as `zolly brief`, explicitly the liveness read.
+    /// Alias kept for offices whose persona still says `pulse`; `brief` is
+    /// the one visible name.
+    #[command(hide = true)]
     Pulse {
         #[arg(long)]
         json: bool,
@@ -391,52 +394,80 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
+    // The seats belong to the project's workspace, not to whichever workspace
+    // happened to run `init`. Resolve by checkout path, then label, then make
+    // one.
+    let workspace = herdr
+        .ensure_workspace(&office.root, &office.frequency)
+        .context("Failed to resolve the office workspace")?;
+    println!("Workspace: {}", workspace);
+
+    let mut failures: Vec<String> = Vec::new();
+
     if !has_foreman {
         println!("Opening foreman tab...");
-        let foreman_pane = herdr
-            .agent_start_with_retry(&foreman, &foreman_label, "omp", &office.root_str(), |pane| {
-                radio_join(
-                    "foreman",
-                    pane,
-                    &seat_role("foreman", &office),
-                    &office.frequency,
-                )
-            })
-            .context("Failed to start foreman agent")?;
-        if let Some(tab) = herdr.tab_id_for_pane(&foreman_pane) {
-            let _ = herdr.tab_rename(&tab, &foreman_label);
+        match open_seat(
+            herdr,
+            &office,
+            "foreman",
+            &foreman,
+            &foreman_label,
+            "foreman",
+            &workspace,
+        ) {
+            Ok(()) => println!("Foreman ready"),
+            Err(e) => failures.push(format!("foreman: {e}")),
         }
-        let foreman_prompt = std::fs::read_to_string(office.agent_md("foreman"))
-            .context("Failed to read foreman agent.md")?;
-        herdr
-            .agent_prompt_wait(&foreman, &foreman_prompt, 30_000)
-            .context("Failed to prompt foreman")?;
-        println!("Foreman ready");
     }
 
     if !has_reviewer {
         println!("Opening reviewer tab...");
-        let reviewer_pane = herdr
-            .agent_start_with_retry(&reviewer, &reviewer_label, "omp", &office.root_str(), |pane| {
-                radio_join(
-                    "pr-reviewer",
-                    pane,
-                    &seat_role("pr-reviewer", &office),
-                    &office.frequency,
-                )
-            })
-            .context("Failed to start reviewer agent")?;
-        if let Some(tab) = herdr.tab_id_for_pane(&reviewer_pane) {
-            let _ = herdr.tab_rename(&tab, &reviewer_label);
+        match open_seat(
+            herdr,
+            &office,
+            "pr-reviewer",
+            &reviewer,
+            &reviewer_label,
+            "reviewer",
+            &workspace,
+        ) {
+            Ok(()) => println!("Reviewer ready"),
+            Err(e) => failures.push(format!("pr-reviewer: {e}")),
         }
-        let reviewer_prompt = std::fs::read_to_string(office.agent_md("reviewer"))
-            .context("Failed to read reviewer agent.md")?;
-        herdr
-            .agent_prompt_wait(&reviewer, &reviewer_prompt, 30_000)
-            .context("Failed to prompt reviewer")?;
-        println!("Reviewer ready");
     }
 
+    if !failures.is_empty() {
+        anyhow::bail!("could not start: {}", failures.join("; "));
+    }
+    Ok(())
+}
+
+/// One seat, one linear path: label the tab, join the bus while the pane is a
+/// shell, start the agent, deliver the persona. Errors are the caller's to
+/// collect — a failed foreman must not stop the reviewer.
+fn open_seat(
+    herdr: &herdr::HerdrClient,
+    office: &Office,
+    handle: &str,
+    name: &str,
+    label: &str,
+    persona: &str,
+    workspace: &str,
+) -> Result<()> {
+    let pane = herdr
+        .agent_start_with_retry(name, label, "omp", &office.root_str(), Some(workspace), |pane| {
+            radio_join(handle, pane, &seat_role(handle, office), &office.frequency)
+        })
+        .with_context(|| format!("Failed to start {name}"))?;
+    if let Some(tab) = herdr.tab_id_for_pane(&pane) {
+        let _ = herdr.tab_rename(&tab, label);
+    }
+    let path = office.agent_md(persona);
+    let prompt = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    herdr
+        .agent_prompt_wait(name, &prompt, 30_000)
+        .with_context(|| format!("Failed to prompt {name}"))?;
     Ok(())
 }
 

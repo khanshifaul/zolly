@@ -23,7 +23,7 @@ Your office's own health. A seat that cannot be dispatched — because the queue
 is wrong, or the base branch moved under it — is a seat that looks busy and
 produces nothing.
 
-Check it with the office read: `zolly pulse` for the
+Check it with the office read: `zolly brief` for the
 ledger (workers, stalls, fresh results, worktree count) and `herdr agent list`
 for the live seats and their panes.
 

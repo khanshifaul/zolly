@@ -230,7 +230,13 @@ fn result_gates(root: &Path, dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
 
 pub fn generate_brief(root: &Path) -> Result<Brief> {
     let herdr = crate::herdr::HerdrClient::new(root.to_path_buf());
-    let agents = herdr.agent_list().context("Failed to list agents")?;
+    // Only this office's agents. `herdr agent list` is server-wide, and the
+    // unfiltered read made the test office report zylosync's foreman and
+    // reviewer as its own workers (wJ:p1, 2026-10-21). The workspace is the
+    // boundary: every seat and worker lives in the office's workspace.
+    let agents = herdr
+        .agents_for_office(root)
+        .context("Failed to list this office's agents")?;
 
     // Workers = any named, non-manager herdr agent currently live.
     // The ledger is gone; herdr is the source of truth for *who exists*, and
@@ -371,7 +377,12 @@ pub fn generate_brief(root: &Path) -> Result<Brief> {
         .context("Failed to run git log")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git log failed: {}", stderr);
+        // An empty repository is a state, not an error: a fresh office has
+        // zero commits and must still answer. Dying here made every pulse and
+        // brief on a template checkout look broken (wJ:p1, 2026-10-21).
+        if !stderr.contains("does not have any commits yet") {
+            anyhow::bail!("git log failed: {}", stderr);
+        }
     }
     let commit_lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()

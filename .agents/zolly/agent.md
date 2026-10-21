@@ -109,7 +109,7 @@ branches with commits not on the base branch.
 
 ## §9 know your team
 
-`zolly pulse` — office read. `herdr agent list` — live agents, panes,
+`zolly brief` — office read. `herdr agent list` — live agents, panes,
 statuses. Velocity: `git log --since='2 hours ago' --oneline | wc -l`.
 
 ## §10 gate: human

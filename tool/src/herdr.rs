@@ -48,6 +48,49 @@ struct HerdrPaneCurrentResult {
 }
 
 #[derive(Debug, Deserialize)]
+struct HerdrPaneListResponse {
+    result: HerdrPaneListResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrPaneListResult {
+    panes: Vec<HerdrPaneInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrPaneInfo {
+    pane_id: String,
+    workspace_id: String,
+    cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrWorkspaceListResponse {
+    result: HerdrWorkspaceListResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrWorkspaceListResult {
+    workspaces: Vec<HerdrWorkspace>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HerdrWorkspace {
+    pub workspace_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrWorkspaceCreateResponse {
+    result: HerdrWorkspaceCreateResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct HerdrWorkspaceCreateResult {
+    workspace: HerdrWorkspace,
+}
+
+#[derive(Debug, Deserialize)]
 struct TabCreateResponse {
     result: TabCreateResult,
 }
@@ -575,6 +618,7 @@ impl HerdrClient {
         tab_label: &str,
         kind: &str,
         cwd: &str,
+        workspace: Option<&str>,
         on_pane: F,
     ) -> Result<String>
     where
@@ -598,13 +642,20 @@ impl HerdrClient {
         // the next equally-unready pane. Capped at 4 attempts; a pane that
         // never becomes hostable is a real failure, not a transient race.
         let mut last_err = None;
+        let mut last_pane = String::new();
         for _ in 0..4 {
-            let pane = self.tab_new(tab_label, cwd)?;
+            let pane = self.tab_new(tab_label, cwd, workspace)?;
             // Still a shell: this is where the Radio join must happen.
             on_pane(&pane);
+            last_pane = pane.clone();
             match self.agent_start(name, kind, &pane) {
                 Ok(()) => return Ok(pane),
-                Err(e) if format!("{e}").contains("agent_pane_busy") => {
+                Err(e) if Self::start_retryable(&e) => {
+                    // A timed-out start may have registered the agent anyway.
+                    // Take that agent instead of starting a duplicate.
+                    if self.agent_exists(name) {
+                        return self.pane_id_for_agent(name);
+                    }
                     last_err = Some(e);
                     if let Some(tid) = self.tab_id_for_pane(&pane) {
                         let _ = Command::new("herdr")
@@ -613,10 +664,33 @@ impl HerdrClient {
                     }
                     std::thread::sleep(std::time::Duration::from_millis(750));
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // A non-transient refusal must not leave a labelled empty
+                    // tab behind (observed: `foreman@zylosync` orphan).
+                    if let Some(tid) = self.tab_id_for_pane(&pane) {
+                        let _ = Command::new("herdr")
+                            .args(["tab", "close", &tid])
+                            .output();
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        if !last_pane.is_empty() {
+            if let Some(tid) = self.tab_id_for_pane(&last_pane) {
+                let _ = Command::new("herdr")
+                    .args(["tab", "close", &tid])
+                    .output();
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("agent {} failed to start", name)))
+    }
+
+    /// Transient start refusals worth a fresh tab: the pane had no usable
+    /// shell yet, or the startup handshake timed out.
+    fn start_retryable(e: &anyhow::Error) -> bool {
+        let msg = format!("{e}");
+        msg.contains("agent_pane_busy") || msg.contains("timed out waiting for agent startup")
     }
 
     /// True if an agent named `name` is currently live.
@@ -1027,7 +1101,7 @@ impl HerdrClient {
         Ok(resp.result.pane)
     }
 
-    pub fn tab_new(&self, label: &str, cwd: &str) -> Result<String> {
+    pub fn tab_new(&self, label: &str, cwd: &str, workspace: Option<&str>) -> Result<String> {
         // Always create a fresh tab. The previous reuse path — which looked
         // for an existing tab with the same label and returned its root pane
         // when agent_status was "unknown" — was the direct cause of the
@@ -1039,8 +1113,17 @@ impl HerdrClient {
         // creates shellless panes, which is why agent_start then refused
         // them ~50% of the time with agent_pane_busy. --focus gives the tab
         // a live shell the instant create returns.
+        //
+        // `workspace` matters: without it the tab lands in whatever workspace
+        // the command happens to run from, which is how foreman and reviewer
+        // ended up in the wrong project's workspace on 2026-10-21.
+        let mut args = vec!["tab", "create", "--label", label, "--cwd", cwd, "--focus"];
+        if let Some(workspace) = workspace {
+            args.push("--workspace");
+            args.push(workspace);
+        }
         let output = Command::new("herdr")
-            .args(["tab", "create", "--label", label, "--cwd", cwd, "--focus"])
+            .args(&args)
             .output()
             .context("Failed to run herdr tab create")?;
 
@@ -1052,6 +1135,121 @@ impl HerdrClient {
         let resp: TabCreateResponse =
             serde_json::from_str(&stdout).context("Failed to parse herdr tab create")?;
         Ok(resp.result.root_pane.pane_id)
+    }
+
+    /// The agents whose panes live in this office's workspace. Agent names
+    /// are not enough: `herdr agent list` is server-wide, so a brief built
+    /// from it counts another office's seats as workers.
+    pub fn agents_for_office(&self, root: &Path) -> Result<Vec<HerdrAgent>> {
+        let agents = self.agent_list()?;
+        let Some(workspace) = self.workspace_for_path(root) else {
+            return Ok(Vec::new());
+        };
+        let out = Command::new("herdr")
+            .args(["pane", "list"])
+            .output()
+            .context("Failed to run herdr pane list")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "herdr pane list failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let resp: HerdrPaneListResponse =
+            serde_json::from_slice(&out.stdout).context("Failed to parse herdr pane list")?;
+        let panes: std::collections::HashSet<&str> = resp
+            .result
+            .panes
+            .iter()
+            .filter(|p| p.workspace_id == workspace)
+            .map(|p| p.pane_id.as_str())
+            .collect();
+        Ok(agents
+            .into_iter()
+            .filter(|a| panes.contains(a.pane_id.as_str()))
+            .collect())
+    }
+
+    /// The office's herdr workspace: by checkout path, then by label, then
+    /// created. Seats must open here, not in whichever workspace happened to
+    /// invoke `init`.
+    pub fn ensure_workspace(&self, root: &Path, label: &str) -> Result<String> {
+        if let Some(id) = self.workspace_for_path(root) {
+            return Ok(id);
+        }
+        if let Ok(list) = self.workspace_list() {
+            if let Some(ws) = list.iter().find(|w| w.label == label) {
+                return Ok(ws.workspace_id.clone());
+            }
+        }
+        let cwd = root.to_string_lossy();
+        let out = Command::new("herdr")
+            .args([
+                "workspace",
+                "create",
+                "--label",
+                label,
+                "--cwd",
+                &cwd,
+                "--no-focus",
+            ])
+            .output()
+            .context("Failed to run herdr workspace create")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "herdr workspace create failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let resp: HerdrWorkspaceCreateResponse = serde_json::from_slice(&out.stdout)
+            .context("Failed to parse herdr workspace create")?;
+        println!(
+            "Created herdr workspace {} ({}).",
+            label, resp.result.workspace.workspace_id
+        );
+        Ok(resp.result.workspace.workspace_id)
+    }
+
+    pub fn workspace_list(&self) -> Result<Vec<HerdrWorkspace>> {
+        let out = Command::new("herdr")
+            .args(["workspace", "list"])
+            .output()
+            .context("Failed to run herdr workspace list")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "herdr workspace list failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let resp: HerdrWorkspaceListResponse = serde_json::from_slice(&out.stdout)
+            .context("Failed to parse herdr workspace list")?;
+        Ok(resp.result.workspaces)
+    }
+
+    /// The workspace that already hosts a pane inside `root`, if any. Exact
+    /// checkouts win over a pane sitting in a subdirectory.
+    pub fn workspace_for_path(&self, root: &Path) -> Option<String> {
+        let out = Command::new("herdr")
+            .args(["pane", "list"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let resp: HerdrPaneListResponse = serde_json::from_slice(&out.stdout).ok()?;
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let mut nested = None;
+        for pane in &resp.result.panes {
+            let cwd = Path::new(&pane.cwd);
+            let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+            if cwd == root {
+                return Some(pane.workspace_id.clone());
+            }
+            if nested.is_none() && cwd.starts_with(&root) {
+                nested = Some(pane.workspace_id.clone());
+            }
+        }
+        nested
     }
 
     // worktree_open was removed with `zolly spawn` (spec §17): opening

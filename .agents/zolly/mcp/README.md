@@ -5,7 +5,7 @@ hand her a message through a typed tool instead of a raw shell call.
 
 ```
 zolly_say(text)    → herdr agent prompt zolly-<frequency> <text>   (fire-and-forget; reports what happened)
-zolly_status()     → zolly pulse --json                (the office read, same shape as the CLI)
+zolly_status()     → zolly brief --json                (the office read, same shape as the CLI)
 ```
 
 ## Why a typed interface

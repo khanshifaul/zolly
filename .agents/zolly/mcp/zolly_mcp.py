@@ -6,7 +6,7 @@ Two tools:
   zolly_say(text)   deliver `text` to Zolly's pane via `herdr agent prompt zolly-<frequency>`
                     and report what actually happened (delivered / the exact
                     error), fire-and-forget — no wait for a reply turn.
-  zolly_status()    the office read: `zolly pulse --json`, shape-identical.
+  zolly_status()    the office read: `zolly brief --json`, shape-identical.
 
 Why this exists: nothing exposed Zolly as a callable interface. The only path
 into her pane was a raw shell call, `herdr agent prompt zolly-<frequency> "<text>"`, which
@@ -31,11 +31,11 @@ Environment overrides (all optional):
   ZOLLY_BIN             path to the `zolly` binary         (default: which zolly,
                                                           else ~/.local/bin/zolly)
   HERDR_BIN             path to the `herdr` binary         (default: which herdr)
-  ZOLLY_ROOT            repo root for `zolly pulse`        (default: nearest
+  ZOLLY_ROOT            repo root for `zolly brief`        (default: nearest
                                                           ancestor of cwd with
                                                           .agents/ + AGENTS.md)
   ZOLLY_MCP_PROMPT_TIMEOUT_S  seconds allowed for `herdr agent prompt`  (default: 20)
-  ZOLLY_MCP_STATUS_TIMEOUT_S  seconds allowed for `zolly pulse --json`  (default: 30)
+  ZOLLY_MCP_STATUS_TIMEOUT_S  seconds allowed for `zolly brief --json`  (default: 30)
 """
 
 import json
@@ -161,7 +161,7 @@ def tool_path(env_key, name, fallback=None):
 
 
 def find_main_root():
-    """Repo root, for `zolly pulse`: env, else the nearest ancestor of cwd that
+    """Repo root, for `zolly brief`: env, else the nearest ancestor of cwd that
     holds `.agents/` and `AGENTS.md`, else cwd. `zolly` itself takes its root
     from the cwd (main.rs:96), so we hand it one explicitly."""
     override = os.environ.get("ZOLLY_ROOT")
@@ -414,29 +414,29 @@ def zolly_say(text, wait_submit_ms=2000):
 
 
 def zolly_status():
-    """The office read: parsed `zolly pulse --json`."""
+    """The office read: parsed `zolly brief --json`."""
     root = find_main_root()
     bins = zolly_bin()
-    res = run([bins, "pulse", "--json"], timeout_s=STATUS_TIMEOUT_S, cwd=root)
+    res = run([bins, "brief", "--json"], timeout_s=STATUS_TIMEOUT_S, cwd=root)
     out = {
         "ok": res["exit_code"] == 0 and not res["timed_out"],
-        "command": [bins, "pulse", "--json"],
+        "command": [bins, "brief", "--json"],
         "cwd": root,
         "exit_code": res["exit_code"],
         "timed_out": res["timed_out"],
         "stderr": _diag(res["stderr"]),
     }
     if res["timed_out"]:
-        out["error"] = "zolly pulse --json timed out after %ss" % STATUS_TIMEOUT_S
+        out["error"] = "zolly brief --json timed out after %ss" % STATUS_TIMEOUT_S
         return out
     if res["exit_code"] != 0:
-        out["error"] = "zolly pulse --json failed: %s" % (_diag(res["stderr"]) or ("exit %s" % res["exit_code"]))
+        out["error"] = "zolly brief --json failed: %s" % (_diag(res["stderr"]) or ("exit %s" % res["exit_code"]))
         return out
     try:
         out["json"] = json.loads(res["stdout"])
     except (ValueError, TypeError) as e:
         out["ok"] = False
-        out["error"] = "zolly pulse --json returned unparseable JSON: %s" % e
+        out["error"] = "zolly brief --json returned unparseable JSON: %s" % e
         out["stdout"] = _diag(res["stdout"])
     return out
 
@@ -485,7 +485,7 @@ TOOLS = [
     {
         "name": "zolly_status",
         "description": (
-            "The office read, without prompting Zolly: runs `zolly pulse --json` "
+            "The office read, without prompting Zolly: runs `zolly brief --json` "
             "and returns its JSON verbatim under `json` (same shape as the CLI). "
             "Use it for a cheap liveness/queue check before deciding whether to "
             "say anything to Zolly at all."

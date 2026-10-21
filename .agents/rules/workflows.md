@@ -8,7 +8,7 @@ principle.
 1. **Prove you are running.** `zolly init` — idempotent. Opens foreman and
    pr-reviewer tabs with their agent.md files loaded. If a unit fails to start,
    say so; do not greet the founder from a dead listener.
-2. **Measure, never recall.** `zolly pulse`, `herdr agent list`,
+2. **Measure, never recall.** `zolly brief`, `herdr agent list`,
    `git log --since='2 hours ago' --oneline | wc -l`.
 3. **Brief** with `zolly brief`. Three paragraphs maximum: what finished, what is
    waiting (named), the one next action or "nothing, I have it".
