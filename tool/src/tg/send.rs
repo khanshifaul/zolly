@@ -505,6 +505,9 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
 
     // 4. Transcribe. `--model` is global, so it must precede the subcommand.
     let mut command = tokio::process::Command::new("voxtype");
+    // -q drops the INFO lines; the progress lines remain and are filtered
+    // out below. There is no flag for "transcript only".
+    command.arg("-q");
     if let Some(model) = stt_model() {
         command.arg("--model").arg(model);
     }
@@ -529,7 +532,7 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
         );
     }
 
-    let transcript = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let transcript = voxtype_transcript(&output.stdout);
     if transcript.is_empty() {
         anyhow::bail!("transcription produced no text (audio may be silent)");
     }
@@ -558,6 +561,27 @@ fn stt_model_with(explicit: Option<&str>, data_dir: Option<&Path>) -> Option<Pat
     data_dir
         .map(|dir| dir.join("voxtype/models/parakeet-redux"))
         .filter(|path| path.is_dir())
+}
+
+/// voxtype writes its progress to stdout, before the transcript and even in
+/// quiet mode. Drop the known progress lines; a no-speech notice disappears
+/// the same way, leaving an empty transcript the caller reports as silence.
+fn voxtype_transcript(stdout: &[u8]) -> String {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty()
+                && !line.starts_with("Loading audio file:")
+                && !line.starts_with("Audio format:")
+                && !line.starts_with("Processing ")
+                && !line.starts_with("VAD:")
+                && !line.starts_with("No speech detected")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 /// One line for the founder. voxtype logs INFO lines to stderr even on
@@ -732,6 +756,15 @@ mod stt_tests {
         assert_eq!(stt_model_with(None, Some(&root)), Some(model));
         std::fs::remove_dir_all(&root).expect("remove test model dir");
         assert_eq!(stt_model_with(None, Some(&root)), None);
+    }
+
+    #[test]
+    fn transcript_ignores_the_progress_block() {
+        let stdout = b"Loading audio file: \"x.wav\"\nAudio format: 16000 Hz, 1 channel(s), Int\nProcessing 176000 samples (11.00s)...\nVAD: 8.20s speech (74.5% of audio)\n\nhello world\n";
+        assert_eq!(voxtype_transcript(stdout), "hello world");
+        let silent = b"Loading audio file: \"x.wav\"\nAudio format: 16000 Hz, 1 channel(s), Int\nProcessing 32000 samples (2.00s)...\nVAD: 0.00s speech (0.0% of audio)\nNo speech detected, skipping transcription.\n";
+        assert_eq!(voxtype_transcript(silent), "");
+        assert_eq!(voxtype_transcript(b"plain transcript\n"), "plain transcript");
     }
 
     #[test]
