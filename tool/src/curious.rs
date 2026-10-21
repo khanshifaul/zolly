@@ -90,7 +90,7 @@ fn code_todos(root: &Path) -> Vec<String> {
             "-n",
             "-I",
             "-E",
-            "TODO|FIXME|HACK",
+            r"\b(TODO|FIXME|HACK)\b",
             "--",
             "*.rs",
             "*.py",
