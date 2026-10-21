@@ -776,7 +776,7 @@ elif [ -f "$MCP_DEST" ] && cmp -s "$MCP_SRC" "$MCP_DEST"; then
     sh "$MCP_INSTALLER" "$MCP_DEST" --frequency "$FREQ" --root "$TARGET" --write "$TARGET" >/dev/null
     ok "MCP registered for this project: $MCP_PROJECT_FILE"
   fi
-elif [ "$(ask_yn "Deploy the MCP server to $MCP_DEST and register it in $MCP_PROJECT_FILE?" y)" = n ]; then
+elif [ "$(ask_yn "Deploy zolly-mcp?" y)" = n ]; then
   skip "MCP (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
   say "would deploy the MCP server to $MCP_DEST"
@@ -887,7 +887,7 @@ else
         say "chat ids: $IDS"
         [ "$(ask_yn "Use these ids?" y)" = y ] || IDS=""
       elif [ -n "$TOKEN" ]; then
-        say "no chat id yet — message the bot once, then re-run"
+        note "no chat id yet — send the bot a message, or paste the id below"
       fi
     fi
     [ -n "$IDS" ] || IDS=$(ask_text "Telegram user ids (comma separated):")
@@ -936,7 +936,7 @@ EOF
     if [ "$HAVE_CREDS" -eq 1 ]; then
       ok "credentials written: $CRED_FILE"
     else
-      skip "token saved — no chat id yet; message the bot, then re-run --force"
+      note "token saved — no chat id yet"
     fi
   fi
 elif [ "$WANT_TELEGRAM" -eq 1 ]; then
@@ -956,8 +956,12 @@ elif [ "$DO_TELEGRAM" -eq 0 ]; then
   skip "systemd (Telegram is off)"
 elif [ "$HAVE_CREDS" -ne 1 ]; then
   # A listener with no token would restart-loop. Do not create a unit that
-  # cannot work; tell the user how to get one after adding credentials.
-  skip "systemd (no Telegram credentials)"
+  # cannot work; the summary says how to finish the credentials.
+  if [ "$TG_STATE" = "token-only" ]; then
+    skip "systemd (no chat id yet)"
+  else
+    skip "systemd (no Telegram credentials)"
+  fi
 elif [ "$(ask_yn "Write the listener unit zolly@$FREQ.service?" y)" = n ]; then
   skip "systemd (declined)"
 elif [ "$DRY_RUN" -eq 1 ]; then
@@ -1029,9 +1033,11 @@ say ""
 note "Fill .agents/rules/project.md: architecture, layout, thresholds."
 if [ "$HAVE_CREDS" -eq 1 ]; then
   note "Telegram: configured."
+elif [ "$TG_STATE" = "token-only" ]; then
+  warn "Telegram: token saved — message the bot, then re-run --force."
 else
   warn "Telegram: off — token+ids in $CRED_FILE, then re-run --force."
 fi
-if [ "$BIN_STATE" != "installed" ]; then
+if [ "$BIN_STATE" != "installed" ] && [ "$DO_BINARY" -eq 1 ]; then
   warn "Binary: $BIN_STATE — build tool/ or drop it at $BIN_DEST."
 fi

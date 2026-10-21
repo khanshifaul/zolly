@@ -461,7 +461,7 @@ class InstallTests(unittest.TestCase):
             b"n\nn\n",
         )
         self.assertEqual(code, 0, text)
-        self.assertIn("Deploy the MCP server", text)
+        self.assertIn("Deploy zolly-mcp?", text)
         self.assertIn("Configure Telegram?", text)
         self.assertIn("skip MCP (declined)", text)
         self.assertIn("skip Telegram (declined)", text)
