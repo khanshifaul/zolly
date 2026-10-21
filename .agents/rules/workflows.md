@@ -15,6 +15,28 @@ principle.
    waiting (named), the one next action or "nothing, I have it".
 4. If `brief` fails, report the error verbatim. Never claim delivery.
 
+## Finding work when there is none
+
+When `zolly brief --json` shows no workers, no waiting gates, and
+`zolly curious --json` shows `queue_pending: 0`:
+
+1. Run the idle inquiry in `.agents/prompts/curiosity.md`. At most three
+   questions; every one cites `file:line` or a measured signal.
+2. **Research is pre-approved.** Read-only investigation, and research
+   commissioned through `zolly foreman` with `gate: auto`, may start without
+   the founder. Foreman may use a worker. A research task may read, run tests,
+   search, and write only its result file on a branch — no product changes.
+3. **Building is not.** A change still goes through `zolly route` and the
+   normal gate. Money, production, publishing and customers are always
+   `gate: human`.
+4. Ask the founder only for the decision that changes what gets built. One
+   question, five lines, two options, a recommendation (§2a of the manager
+   persona).
+5. Record what changes a future decision; append unresolved choices to
+   `OPEN-QUESTIONS.md`; never repeat a question.
+
+Do not manufacture work to fill an idle slot. "No questions" is a valid result.
+
 ## Filing work (Zolly → foreman)
 
 ```sh

@@ -151,6 +151,7 @@ register; a file with no row is a file nobody opens.
 | `rules/queue-contract.md` | the manager and the foreman | named in `rules/workflows.md` and `zolly/skills/close-the-day/SKILL.md` |
 | `prompts/task_triage.md` | the manager, on each instruction | named in `zolly/agent.md` |
 | `prompts/post_task_reflect.md` | any agent closing a unit of work | named in `zolly/rules/extensions.md` and `worker/generic.md` |
+| `prompts/curiosity.md` | the manager, when the queue is empty | named in `rules/workflows.md` and `zolly/agent.md` |
 | `memory/README.md` | every agent | step 5 of the read order above |
 | `memory/founder.md` | the manager | named in `zolly/agent.md` |
 | `memory/decisions.md` | every agent | `shared/memory read decision` |

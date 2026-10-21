@@ -71,6 +71,21 @@ list` for names/panes/statuses.
 Carry one line of active context: `ctx: <domain> (<thread>)`. Update on domain
 switch.
 
+## §2a talk to the founder
+
+Assume context-switching and low working memory — the founder has ADHD. That is
+a design constraint, not an insult and not a joke.
+
+- Lead with the decision, in one line.
+- Five lines maximum. Plain words. No jargon, no file paths unless the path is
+  the decision.
+- Two options and a recommendation. Say what happens if we do nothing.
+- One question at a time. Never make them choose between six things.
+- Do not make them read a report or remember yesterday's task; restate the goal
+  in one line.
+- "I do not know yet; I can find out for a few dollars" is an acceptable answer.
+  Pretending to know is not.
+
 ## §3 take instructions — route small / large
 
 The classification is mechanical and lives in `.agents/prompts/task_triage.md`;
@@ -203,7 +218,28 @@ multiple epics with ordering/dependencies — then it's a roadmap in
 ## §16 between instructions
 
 Not idle: check workers, results, stalls, waiting gates. Fix what is small, name
-what is not. Then wait.
+what is not.
+
+When the queue is empty and no seat is working, run the **idle inquiry** in
+`.agents/prompts/curiosity.md`:
+
+1. `zolly brief --json` confirms there is nothing in flight.
+2. `zolly curious --json` measures the tree.
+3. **Research is pre-approved.** Read-only investigation, and research you
+   commission through foreman (`gate: auto`), may start without the founder.
+   Foreman may use a worker. Research may write only its result file on a
+   branch; it may not change product code, spend, publish, contact a customer,
+   or touch production.
+4. **Building is not pre-approved.** A change still goes through `zolly route`
+   and the normal gate. Money, production, publishing and customers are always
+   `gate: human`.
+5. Ask the founder only for the decision that changes what gets built: one
+   question, five lines, two options, a recommendation. Use `§2a`.
+6. Record the answer as a learning if it changes a future decision; append the
+   open decision to `OPEN-QUESTIONS.md`. Never repeat a question.
+
+Never invent work to fill a slot. A curiosity pass with nothing worth asking
+ends with "no questions", not with a manufactured task.
 
 After each brief, run `.agents/prompts/post_task_reflect.md`. Most briefs
 produce **nothing** to record: a learning is a correction that recurred or cost

@@ -1,5 +1,6 @@
 mod herdr;
 mod brief;
+mod curious;
 mod office;
 mod queue;
 mod render;
@@ -31,6 +32,11 @@ enum Commands {
     /// the one visible name.
     #[command(hide = true)]
     Pulse {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deterministic signals for an idle-curiosity pass. No model call.
+    Curious {
         #[arg(long)]
         json: bool,
     },
@@ -204,6 +210,7 @@ async fn main() -> Result<()> {
         Commands::Init => init(&herdr, &root),
         Commands::Brief { json } => brief_cmd(&root, json),
         Commands::Pulse { json } => brief_cmd(&root, json),
+        Commands::Curious { json } => curious_cmd(&root, json),
         Commands::Route { text, json } => route_cmd(&text, json),
         Commands::Bus {
             handle,
@@ -696,6 +703,19 @@ fn brief_cmd(root: &std::path::Path, json: bool) -> Result<()> {
     } else {
         let sections = render::sections(root, &brief);
         print!("{}", render::render_cli(&sections));
+    }
+    Ok(())
+}
+
+fn curious_cmd(root: &std::path::Path, json: bool) -> Result<()> {
+    let signals = curious::inspect(root)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&signals).context("Failed to serialize JSON")?
+        );
+    } else {
+        print!("{}", curious::render(&signals));
     }
     Ok(())
 }
@@ -2354,7 +2374,33 @@ mod close_tests {
     }
     use std::path::Path;
 
-    const REPO: &str = "/home/khan/Projects/zylosync";
+    fn fixture_repo(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "zolly-close-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join(".agents/results")).unwrap();
+        run_git(&dir, &["init", "-q"]);
+        run_git(&dir, &["config", "user.email", "test@example.com"]);
+        run_git(&dir, &["config", "user.name", "Test"]);
+        std::fs::write(
+            dir.join(".agents/results/t-sms-wiring.md"),
+            "---\nstatus: done\n---\n\nresult\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".agents/results/admin-org-subscriptions-page.md"),
+            "body only, no frontmatter\n",
+        )
+        .unwrap();
+        run_git(&dir, &["add", "."]);
+        run_git(&dir, &["commit", "-q", "-m", "fixture"]);
+        dir
+    }
 
     #[test]
     fn short_keeps_eight_characters_and_tolerates_shorter() {
@@ -2381,22 +2427,23 @@ mod close_tests {
         // loudly; a tracked-but-unsettled one warns and names why. Neither is
         // a hard failure — the self-repair path has no worktree and the sweep
         // must still exit 0.
-        let repo = Path::new(REPO);
-        let settled = check_done_signal(repo, "t-sms-wiring");
+        let repo = fixture_repo("done-signal");
+        let settled = check_done_signal(&repo, "t-sms-wiring");
         assert_eq!(settled.token, "ok (tracked)", "{}", settled.line);
         assert!(!settled.failed);
 
-        let missing = check_done_signal(repo, "t-nonexistent-synthetic");
+        let missing = check_done_signal(&repo, "t-nonexistent-synthetic");
         assert!(missing.token.starts_with("MISSING"), "{}", missing.line);
         assert!(missing.line.contains("WARN"), "{}", missing.line);
         assert!(!missing.failed);
 
         // Tracked but not settled: `admin-org-subscriptions-page.md` has no
         // frontmatter, so close must refuse to call it ok and name the case.
-        let unsettled = check_done_signal(repo, "admin-org-subscriptions-page");
+        let unsettled = check_done_signal(&repo, "admin-org-subscriptions-page");
         assert_eq!(unsettled.token, "MISSING (not settled)", "{}", unsettled.line);
         assert!(unsettled.line.contains("no frontmatter block at all"), "{}", unsettled.line);
         assert!(!unsettled.failed);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
@@ -2462,8 +2509,21 @@ mod close_tests {
     fn main_checkout_is_the_first_registered_worktree() {
         // The sweep must act on the checkout holding `main`, even when run from
         // a linked worktree. git lists the main working tree first.
-        let repo = main_checkout(Path::new(REPO));
-        assert_eq!(repo, Path::new(REPO));
+        let tmp = std::env::temp_dir().join(format!(
+            "zolly-main-checkout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        run_git(&tmp, &["init"]);
+        run_git(&tmp, &["config", "user.email", "test@test"]);
+        run_git(&tmp, &["config", "user.name", "test"]);
+        run_git(&tmp, &["commit", "--allow-empty", "-m", "root"]);
+        assert_eq!(main_checkout(&tmp), tmp.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
 

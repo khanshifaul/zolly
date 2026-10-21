@@ -68,6 +68,7 @@ are cut from the base branch.
 | 🛡️ **Isolation** | Frequency, herdr agent names, credentials and units are scoped per project. |
 | 📋 **Queue + review** | Task queue, result files and the approval gate. |
 | 🎙️ **Voice** | Local STT (`voxtype`/`parakeet-redux`); optional Piper replies. |
+| 🔍 **Idle inquiry** | When the queue is empty, the manager measures the tree and asks at most three evidence-backed questions. |
 | 🩺 **Doctor** | One command checks binary, config, graph, units and bus membership. |
 
 ## What you get
