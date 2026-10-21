@@ -18,6 +18,8 @@ not for displacing work.
 
 - `zolly curious --json` (queue, dirty files, recent commits, TODOs,
   `project.md` truths, open questions).
+- The newest `.agents/inbox/ponder-*.md`, if it is less than two hours old.
+  It names one focus and its reasons; start there, but verify its signals.
 - Read the files named in `code_todos`, `dirty`, and the last commits.
 - `OPEN-QUESTIONS.md`, `memory/decisions.md`, `memory/learnings.md`.
 - `herdr agent list` — check whether a seat is already on this question.

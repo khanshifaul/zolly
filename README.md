@@ -227,6 +227,7 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 | `--base-branch <b>` | integration branch (default: `main`) |
 | `--remote <r>` | git remote (default: `origin`) |
 | `--no-systemd` | do not write a systemd user unit |
+| `--no-ponder` | do not install the idle-attention timer |
 | `--no-binary` | do not install the shared binary |
 | `--no-mcp` | do not deploy or register the MCP server |
 | `--no-telegram` | do not configure Telegram for this office |
@@ -330,6 +331,28 @@ Env: `ZOLLY_TELEGRAM_TOKEN`, `ZOLLY_ALLOWED_IDS`, `ZOLLY_FOUNDER_USERNAME`,
 `ZOLLY_TELEGRAM_WEBHOOK_BIND`, `ZOLLY_TELEGRAM_WEBHOOK_SECRET`,
 `ZOLLY_FOUNDER`, `ZOLLY_BIN_DEST`, `ZOLLY_TOOL_DIR`, `ZOLLY_MCP_DEST`,
 `ZOLLY_KIT_URL`, `ZOLLY_REF`.
+
+</details>
+
+<details>
+<summary>🧠 Idle attention</summary>
+
+When the queue is empty, `zolly curious` measures the tree and
+`zolly ponder` writes one focus note to `.agents/inbox/` — which domain to
+think about next, and the measured reasons. Neither calls a model. The manager
+reads the newest note and runs `prompts/curiosity.md`; at most three questions
+reach the founder.
+
+The installer writes a 30-minute systemd user timer for this (disable with
+`--no-ponder`):
+
+```sh
+systemctl --user enable --now zolly-ponder@<frequency>.timer
+```
+
+For a foreground loop instead: `zolly ponder --loop --interval 1800`. The
+note-only design is deliberate: the timer can rank, but it cannot ask, act, or
+spend.
 
 </details>
 

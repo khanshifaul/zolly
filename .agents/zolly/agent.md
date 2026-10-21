@@ -224,7 +224,9 @@ When the queue is empty and no seat is working, run the **idle inquiry** in
 `.agents/prompts/curiosity.md`:
 
 1. `zolly brief --json` confirms there is nothing in flight.
-2. `zolly curious --json` measures the tree.
+2. `zolly curious --json` measures the tree; read the newest
+   `.agents/inbox/ponder-*.md` (the idle timer writes one every 30 minutes) and
+   start from its focus if the note is fresh.
 3. **Research is pre-approved.** Read-only investigation, and research you
    commission through foreman (`gate: auto`), may start without the founder.
    Foreman may use a worker. Research may write only its result file on a

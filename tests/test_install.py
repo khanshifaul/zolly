@@ -201,7 +201,10 @@ class InstallTests(unittest.TestCase):
         self.assertIn("ZOLLY_TELEGRAM_TOKEN=123456:ABCdef\n", creds)
         self.assertIn("ZOLLY_ALLOWED_IDS=\n", creds)
         units = self.home / ".config" / "systemd" / "user"
-        self.assertFalse(units.exists(), "no listener without a chat id")
+        self.assertFalse(
+            (units / "zolly@app.service").exists(),
+            "no listener without a chat id",
+        )
 
     def test_empty_folder_without_git_is_refused(self):
         repo = self.root / "blank"
@@ -393,6 +396,37 @@ class InstallTests(unittest.TestCase):
         self.assertLess(
             result.stdout.index("restart zolly@app.service"),
             result.stdout.index("telegram-set-webhook --url"),
+        )
+
+    def test_idle_timer_is_written_unless_disabled(self):
+        repo = self.make_repo("app")
+        timer = (
+            self.home / ".config/systemd/user/zolly-ponder@app.timer"
+        )
+        result = subprocess.run(
+            [
+                str(INSTALL), str(repo), "--no-binary", "--no-telegram", "--yes",
+                "--founder", "Test",
+            ],
+            env=self.env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(timer.is_file())
+        self.assertIn("OnUnitActiveSec=30min", timer.read_text(encoding="utf-8"))
+
+        repo2 = self.make_repo("other")
+        result = subprocess.run(
+            [
+                str(INSTALL), str(repo2), "--no-binary", "--no-telegram", "--yes",
+                "--no-ponder", "--founder", "Test",
+            ],
+            env=self.env, capture_output=True, text=True, timeout=60,
+            start_new_session=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(
+            (self.home / ".config/systemd/user/zolly-ponder@other.timer").exists()
         )
 
     def test_poll_does_not_move_a_busy_default_bind(self):

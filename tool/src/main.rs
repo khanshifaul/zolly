@@ -2,6 +2,7 @@ mod herdr;
 mod brief;
 mod curious;
 mod office;
+mod ponder;
 mod queue;
 mod render;
 mod tg;
@@ -39,6 +40,19 @@ enum Commands {
     Curious {
         #[arg(long)]
         json: bool,
+    },
+    /// Write an idle focus note: rank domains from measured signals. No model.
+    Ponder {
+        #[arg(long)]
+        json: bool,
+        /// Ignore the idle gate and the two-hour dedupe.
+        #[arg(long)]
+        force: bool,
+        /// Keep writing at --interval seconds. For a systemd unit or a pane.
+        #[arg(long = "loop")]
+        loop_: bool,
+        #[arg(long, default_value_t = 1800)]
+        interval: u64,
     },
     /// Deterministic triage: SMALL or LARGE, with the reasons.
     Route {
@@ -211,6 +225,20 @@ async fn main() -> Result<()> {
         Commands::Brief { json } => brief_cmd(&root, json),
         Commands::Pulse { json } => brief_cmd(&root, json),
         Commands::Curious { json } => curious_cmd(&root, json),
+        Commands::Ponder {
+            json,
+            force,
+            loop_,
+            interval,
+        } => {
+            if loop_ {
+                loop {
+                    ponder_cmd(&root, json, force)?;
+                    std::thread::sleep(std::time::Duration::from_secs(interval.max(60)));
+                }
+            }
+            ponder_cmd(&root, json, force)
+        }
         Commands::Route { text, json } => route_cmd(&text, json),
         Commands::Bus {
             handle,
@@ -716,6 +744,19 @@ fn curious_cmd(root: &std::path::Path, json: bool) -> Result<()> {
         );
     } else {
         print!("{}", curious::render(&signals));
+    }
+    Ok(())
+}
+
+fn ponder_cmd(root: &std::path::Path, json: bool, force: bool) -> Result<()> {
+    let ponder = ponder::run(root, force)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ponder).context("Failed to serialize JSON")?
+        );
+    } else {
+        print!("{}", ponder::render(&ponder));
     }
     Ok(())
 }

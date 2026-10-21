@@ -25,6 +25,7 @@
 #   --base-branch <b>   integration branch (default: main)
 #   --remote <r>        git remote (default: origin)
 #   --no-systemd        do not write a systemd user unit
+#   --no-ponder         do not install the idle-attention timer
 #   --no-binary         do not install the shared binary
 #   --no-mcp            do not deploy or register the MCP server
 #   --no-telegram       do not configure Telegram
@@ -108,6 +109,7 @@ BASE_BRANCH="main"
 EXPLICIT_BASE=0
 REMOTE="origin"
 DO_SYSTEMD=1
+DO_PONDER=1
 DO_BINARY=1
 DO_MCP=1
 DO_TELEGRAM=1           # 0 = --no-telegram: no credentials, no listener
@@ -117,6 +119,7 @@ MCP_STATE="skipped"
 SD_STATE="skipped"
 SD_ACTIVE=0
 UNIT_WRITTEN=0
+PONDER_STATE="skipped"
 FORCE=0
 DRY_RUN=0
 
@@ -312,6 +315,7 @@ while [ $# -gt 0 ]; do
     --base-branch)  BASE_BRANCH="${2:-}"; EXPLICIT_BASE=1; shift 2 ;;
     --remote)       REMOTE="${2:-}"; shift 2 ;;
     --no-systemd)   DO_SYSTEMD=0; shift ;;
+    --no-ponder)    DO_PONDER=0; shift ;;
     --no-binary)    DO_BINARY=0; shift ;;
     --no-mcp)       DO_MCP=0; shift ;;
     --no-telegram)  DO_TELEGRAM=0; shift ;;
@@ -1199,6 +1203,50 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# idle attention timer — deterministic, no model, no network
+# ---------------------------------------------------------------------------
+PONDER_SERVICE="$SERVICE_DIR/zolly-ponder@$FREQ.service"
+PONDER_TIMER="$SERVICE_DIR/zolly-ponder@$FREQ.timer"
+
+if [ "$DO_SYSTEMD" -ne 1 ]; then
+  skip "idle attention (--no-systemd)"
+elif [ "$DO_PONDER" -ne 1 ]; then
+  skip "idle attention (--no-ponder)"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  note "would write $PONDER_TIMER"
+else
+  mkdir -p "$SERVICE_DIR"
+  cat > "$PONDER_SERVICE" <<EOF
+[Unit]
+Description=Zolly idle attention for $FREQ
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$TARGET
+ExecStart=$BIN_DEST ponder
+Nice=10
+EOF
+  cat > "$PONDER_TIMER" <<EOF
+[Unit]
+Description=Zolly idle attention timer for $FREQ
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+AccuracySec=1min
+Persistent=true
+Unit=zolly-ponder@$FREQ.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  PONDER_STATE="written"
+  ok "idle timer written: $PONDER_TIMER"
+fi
+
+# ---------------------------------------------------------------------------
 # summary + the follow-ups the founder has to do by hand
 # ---------------------------------------------------------------------------
 step "done"
@@ -1234,6 +1282,10 @@ if [ "$UNIT_WRITTEN" -eq 1 ]; then
   else
     note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
   fi
+fi
+if [ "$PONDER_STATE" = "written" ]; then
+  [ "$UNIT_WRITTEN" -eq 1 ] || note "systemctl --user daemon-reload"
+  note "systemctl --user enable --now zolly-ponder@$FREQ.timer   # idle attention"
 fi
 if [ "$WEBHOOK_STATE" = "webhook" ]; then
   note "webhook: $WEBHOOK_URL → http://$WEBHOOK_BIND"

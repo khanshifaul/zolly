@@ -21,7 +21,9 @@ When `zolly brief --json` shows no workers, no waiting gates, and
 `zolly curious --json` shows `queue_pending: 0`:
 
 1. Run the idle inquiry in `.agents/prompts/curiosity.md`. At most three
-   questions; every one cites `file:line` or a measured signal.
+   questions; every one cites `file:line` or a measured signal. The optional
+   `zolly-ponder@<frequency>.timer` writes a focus note every 30 minutes;
+   `zolly ponder` does the same on demand, and neither calls a model.
 2. **Research is pre-approved.** Read-only investigation, and research
    commissioned through `zolly foreman` with `gate: auto`, may start without
    the founder. Foreman may use a worker. A research task may read, run tests,
