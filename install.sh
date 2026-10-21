@@ -1029,13 +1029,13 @@ else
 fi
 say ""
 heading "Next steps:"
-note "cd $TARGET"
-note "zolly doctor    # optional check"
-note "zolly           # manager + foreman + pr-reviewer"
 if [ "$SD_STATE" = "written" ]; then
   note "systemctl --user daemon-reload"
   note "systemctl --user enable --now zolly@$FREQ.service   # Telegram listener"
 fi
+note "cd $TARGET"
+note "zolly doctor    # optional check"
+note "zolly           # manager + foreman + pr-reviewer"
 if [ "$UNBORN" -eq 1 ]; then
   say ""
   note "no commits yet — commit before dispatching (branches cut from '$BASE_BRANCH')."
