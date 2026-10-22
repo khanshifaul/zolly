@@ -139,6 +139,145 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("L-0003", live, "the newest entries stay live")
         self.assertTrue((self.dir / "archive" / "learnings-2026-01.md").is_file())
 
+    def write_learnings(self, text):
+        (self.dir / "learnings.md").write_text(text, encoding="utf-8")
+
+    def test_compact_drops_a_retracted_body_and_keeps_its_header(self):
+        self.write_learnings(
+            "# Learnings\n\nPreamble stays.\n\n"
+            "## L-0001 | 2026-01-01 | believed | main\n\nKeep this body.\n\n"
+            "## L-0002 | 2026-01-02 | retracted | main\n"
+            "Promoted to: .agents/rules/workflows.md\n\nDrop this body.\n\n"
+        )
+        before_text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        before = (self.dir / "learnings.md").stat().st_size
+
+        result = self.run_memory("compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        after = (self.dir / "learnings.md").stat().st_size
+        text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        # Preamble + believed entry must be byte-for-byte identical.
+        self.assertEqual(
+            before_text.split("## L-0002")[0], text.split("## L-0002")[0]
+        )
+        self.assertIn("Keep this body.", text)
+        self.assertNotIn("Drop this body.", text)
+        self.assertIn("## L-0002 | 2026-01-02 | retracted | main", text)
+        self.assertIn("Promoted to: .agents/rules/workflows.md", text)
+        self.assertIn(f"reclaimed {before - after}B", result.stdout)
+        self.assertIn("kept 2 entries", result.stdout)
+
+    def test_compact_keeps_a_retracted_entry_without_a_target(self):
+        self.write_learnings(
+            "# L\n\n"
+            "## L-0001 | 2026-01-01 | retracted | main\n\nNo home yet.\n\n"
+        )
+        result = self.run_memory("compact")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LEFT IN PLACE", result.stderr)
+        self.assertIn("L-0001", result.stderr)
+        self.assertIn(
+            "No home yet.", (self.dir / "learnings.md").read_text(encoding="utf-8")
+        )
+
+    def test_compact_is_idempotent(self):
+        self.write_learnings(
+            "# L\n\n"
+            "## L-0001 | 2026-01-01 | retracted | main\n"
+            "Promoted to: .agents/rules/a.md\n\nbody\n\n"
+        )
+        first = self.run_memory("compact")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        snapshot = (self.dir / "learnings.md").read_bytes()
+
+        second = self.run_memory("compact")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual((self.dir / "learnings.md").read_bytes(), snapshot)
+        self.assertIn("nothing to compact", second.stdout)
+
+    def test_compact_recovers_an_over_budget_store(self):
+        # Under the entry-count bound (3 of 30) but over the byte budget.
+        body = "# Learnings\n\n"
+        body += "## L-0001 | 2026-01-01 | believed | main\n\n" + "z" * 9000 + "\n\n"
+        body += (
+            "## L-0002 | 2026-01-02 | retracted | main\n"
+            "Promoted to: .agents/rules/a.md\n\n" + "y" * 9000 + "\n\n"
+        )
+        body += (
+            "## L-0003 | 2026-01-03 | retracted | main\n"
+            "Promoted to: .agents/rules/b.md\n\n" + "x" * 9000 + "\n\n"
+        )
+        self.write_learnings(body)
+        self.assertEqual(self.run_memory("check").returncode, 3)
+
+        result = self.run_memory("compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLessEqual(
+            sum(p.stat().st_size for p in self.dir.glob("*.md")), 24576
+        )
+        self.assertEqual(self.run_memory("check").returncode, 0)
+        # Compaction is not an archive roll: all three ids stay live.
+        live = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        for n in (1, 2, 3):
+            self.assertIn(f"## L-000{n} |", live)
+        self.assertFalse((self.dir / "archive").exists())
+
+    def test_compact_removes_a_duplicate_tombstone(self):
+        self.write_learnings(
+            "# L\n\n"
+            "## L-0001 | 2026-01-01 | retracted | main\n"
+            "Promoted to: .agents/rules/a.md\n"
+            "Promoted to: .agents/rules/a.md\n\nbody\n\n"
+        )
+        result = self.run_memory("compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        self.assertEqual(text.count("Promoted to: .agents/rules/a.md"), 1)
+        self.assertIn("removed 1 duplicate", result.stdout)
+
+    def test_compact_keeps_the_most_recent_of_two_targets(self):
+        # retract inserts the newest pointer immediately after the header, so
+        # the first line is the latest intent.
+        self.write_learnings(
+            "# L\n\n"
+            "## L-0001 | 2026-01-01 | retracted | main\n"
+            "Promoted to: .agents/rules/new.md\n"
+            "Promoted to: .agents/rules/old.md\n\nbody\n\n"
+        )
+        result = self.run_memory("compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        self.assertIn("Promoted to: .agents/rules/new.md", text)
+        self.assertNotIn(".agents/rules/old.md", text)
+        self.assertIn("discarded .agents/rules/old.md", result.stdout)
+
+    def test_compact_only_named_ids(self):
+        self.write_learnings(
+            "# L\n\n"
+            "## L-0001 | 2026-01-01 | retracted | main\n"
+            "Promoted to: .agents/rules/a.md\n\nBODY ONE\n\n"
+            "## L-0002 | 2026-01-02 | retracted | main\n"
+            "Promoted to: .agents/rules/b.md\n\nBODY TWO\n\n"
+        )
+        result = self.run_memory("compact", "L-0002")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        self.assertIn("BODY ONE", text)
+        self.assertNotIn("BODY TWO", text)
+
+    def test_compact_unknown_id_fails_without_writing(self):
+        self.write_learnings(
+            "# L\n\n"
+            "## L-0001 | 2026-01-01 | retracted | main\n"
+            "Promoted to: .agents/rules/a.md\n\nbody\n\n"
+        )
+        snapshot = (self.dir / "learnings.md").read_bytes()
+        result = self.run_memory("compact", "L-9999")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no entry L-9999", result.stderr)
+        self.assertEqual((self.dir / "learnings.md").read_bytes(), snapshot)
+
     def test_search_returns_the_entry_id(self):
         self.assertEqual(
             self.run_memory("add", "learning", "The lock is fd 9.").returncode, 0

@@ -7,6 +7,7 @@
 #   memory read  [<decision|learning|current|archive|all>]
 #   memory search <terms>
 #   memory archive
+#   memory compact [<id>...]
 #   memory check
 #
 # Design: specs/agents/session-memory.spec.md
@@ -322,7 +323,7 @@ cmd_add() {
   projected=$((live - ${old_size:-0} + ${new_size:-0}))
   if [ "$projected" -gt "$BUDGET_BYTES" ]; then
     rm -f "$new"
-    die "REFUSING WRITE — live files would total ${projected}B, budget is ${BUDGET_BYTES}B. Shorten the entry, or remove an older entry first." 3
+    die "REFUSING WRITE — live files would total ${projected}B, budget is ${BUDGET_BYTES}B. Run 'memory compact' to reclaim the bodies of already-retracted entries, or shorten the entry." 3
   fi
 
   atomic_write "$new" "$f" || die "atomic write failed — live file is unchanged"
@@ -512,6 +513,166 @@ cmd_retract() {
   exit $rc
 }
 
+# ── compact ───────────────────────────────────────────────────────────────────
+# Drop the BODY of a retracted entry, keeping its header and exactly one
+# `Promoted to:` pointer. Nothing is deleted: the id stays (it is a permanent
+# citation, so a reference to a superseded entry still resolves), and the
+# pointer still says where the knowledge went.
+#
+# A retracted entry with NO `Promoted to:` line is left untouched and reported.
+# Its knowledge has no recorded home; that needs a human, not a byte reclaim.
+#
+# Compact only ever shrinks a file. It changes no entry count, so it neither
+# triggers nor replaces the archive roll, and it is safe to run while the store
+# is already over budget — which is the state a double retraction can create.
+#
+# `retract` inserts its new `Promoted to:` line immediately after the header,
+# so the FIRST such line is the MOST RECENT retraction. If two lines name
+# different targets, keep the first (the latest intent) and report the
+# discarded one.
+cmd_compact() {
+  local ids="$*" kind f new before after reclaimed=0 changed=0 rc=0
+  local diag="$WORK/compact.diag" id
+  acquire_lock || exit 1
+  mkdir -p "$WORK"
+  : >"$diag"
+
+  # Fail closed on an unknown id: compacting half a selection would be worse
+  # than refusing, because the caller cannot see which ids were skipped.
+  if [ -n "$ids" ]; then
+    for id in $ids; do
+      grep -qE "^## ${id} \|" "$DECISIONS" "$LEARNINGS" "$CURRENT" 2>/dev/null \
+        || die "no entry $id (ids look like D-0001, L-0001, C-0001)"
+    done
+  fi
+
+  for kind in decision learning current; do
+    f="$(file_for_kind "$kind")"
+    [ -f "$f" ] || continue
+    new="$WORK/compact.$kind"
+    if ! awk -v ids="$ids" -v diag="$diag" -v file="$(basename "$f")" '
+      BEGIN { nw = split(ids, wantid, " ") }
+      function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+      function flush(   i) {
+        if (!have) return
+        if (mode == "retract") {
+          print hdr
+          print keep_promo
+          print ""
+          if (body_lines > 0) printf "C\t%s\t%s\n", file, eid >> diag
+          if (dup_lines > 0) printf "D\t%s\t%s\t%d\n", file, eid, dup_lines >> diag
+          if (dropped != "") printf "X\t%s\t%s\tkept %s; discarded %s\n", file, eid, keep_promo, dropped >> diag
+        } else {
+          for (i = 1; i <= nbuf; i++) print buf[i]
+          if (want && !has) printf "N\t%s\t%s\n", file, eid >> diag
+        }
+        nbuf = 0; have = 0; mode = ""; body_lines = 0; promo_lines = 0; dropped = ""; dup_lines = 0
+      }
+      /^## [DLC]-[0-9][0-9][0-9][0-9] \|/ {
+        flush()
+        hdr = $0
+        split($0, p, "|")
+        eid = p[1]; sub(/^##[ \t]+/, "", eid); eid = trim(eid)
+        st = trim(p[3])
+        want = (st == "retracted")
+        if (ids != "") {
+          want = 0
+          for (i = 1; i <= nw; i++) if (wantid[i] == eid) want = 1
+        }
+        have = 1; nbuf = 1; buf[1] = $0; mode = "keep"; has = 0; keep_promo = ""
+        next
+      }
+      {
+        if (!have) { print; next }
+        nbuf++; buf[nbuf] = $0
+        if ($0 ~ /^Promoted to: /) {
+          has = 1; promo_lines++
+          if (promo_lines == 1) {
+            keep_promo = $0
+            if (want) mode = "retract"
+          } else if (want) {
+            if ($0 == keep_promo) dup_lines++
+            else dropped = dropped (dropped == "" ? "" : ", ") substr($0, 14)
+          }
+        } else if (want && $0 !~ /^[ \t]*$/) {
+          body_lines++
+        }
+      }
+      END { flush() }
+    ' "$f" >"$new" 2>/dev/null; then
+      echo "memory: compact failed for $f — file unchanged" >&2
+      rm -f "$new"; rc=1; continue
+    fi
+
+    # Compaction keeps every entry header. If that invariant broke, do not
+    # write: losing an id is worse than not reclaiming bytes.
+    local old_n new_n
+    old_n=$(count_entries "$f"); old_n="${old_n:-0}"
+    new_n=$(count_entries "$new"); new_n="${new_n:-0}"
+    if [ "$new_n" -ne "$old_n" ]; then
+      echo "memory: compact aborted for $f — entry count would change ($old_n -> $new_n)" >&2
+      rm -f "$new"; rc=1; continue
+    fi
+
+    before=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
+    after=$(wc -c <"$new" 2>/dev/null | tr -d ' ')
+    if cmp -s "$new" "$f"; then
+      rm -f "$new"
+      continue
+    fi
+    # Never grow a file. A layout-only difference (an entry already compacted
+    # but missing its trailing blank line) reclaims nothing; skip it.
+    if [ "$after" -ge "$before" ]; then
+      rm -f "$new"
+      continue
+    fi
+
+    if atomic_write "$new" "$f"; then
+      reclaimed=$((reclaimed + before - after))
+      changed=1
+    else
+      echo "memory: compact write failed for $f — file unchanged" >&2
+      rc=1
+    fi
+  done
+
+  local n_compacted=0 n_dup=0 missing="" conflicts="" tag file id extra
+  while IFS=$'\t' read -r tag file id extra; do
+    [ -n "${tag:-}" ] || continue
+    case "$tag" in
+      C) n_compacted=$((n_compacted + 1)) ;;
+      D) n_dup=$((n_dup + ${extra:-0})) ;;
+      N) missing="$missing $id" ;;
+      X) conflicts="$conflicts"$'\n'"        $id: $extra" ;;
+    esac
+  done <"$diag"
+
+  after=$(live_bytes)
+  local kept_n
+  kept_n=$(live_entries)
+  if [ "$changed" -eq 0 ]; then
+    info "compact: nothing to compact — no retracted body left to reclaim (live ${after}B / ${BUDGET_BYTES}B budget)"
+  else
+    info "compacted ${n_compacted} retracted entr$( [ "$n_compacted" -eq 1 ] && echo y || echo ies) — reclaimed ${reclaimed}B"
+    info "kept ${kept_n} entr$( [ "$kept_n" -eq 1 ] && echo y || echo ies) — believed bodies and every header/pointer are intact (live ${after}B / ${BUDGET_BYTES}B budget)"
+  fi
+  if [ "$n_dup" -gt 0 ]; then
+    info "removed ${n_dup} duplicate 'Promoted to:' line(s) — one pointer per retracted entry"
+  fi
+  if [ -n "$conflicts" ]; then
+    info "conflicting promotion targets — kept the most recent retraction's target:$conflicts"
+  fi
+  if [ -n "$missing" ]; then
+    for id in $missing; do
+      echo "memory: LEFT IN PLACE — $id is retracted but has no 'Promoted to:' line." >&2
+      echo "        Its knowledge has no recorded home; a human must name one." >&2
+      echo "        Add the pointer with: memory retract $id --promoted-to <file>" >&2
+    done
+    rc=1
+  fi
+  exit $rc
+}
+
 # ── read ──────────────────────────────────────────────────────────────────────
 cmd_read() {
   local what="${1:-all}" f
@@ -575,7 +736,8 @@ cmd_check() {
   bytes=$(live_bytes)
   if [ "$bytes" -gt "$BUDGET_BYTES" ]; then
     echo "memory: BOUND EXCEEDED — live files total ${bytes}B, budget is ${BUDGET_BYTES}B." >&2
-    echo "        Run 'memory archive' to roll the oldest entries; if it still exceeds the budget, remove or shorten one." >&2
+    echo "        Run 'memory compact' to reclaim the bodies of already-retracted entries first;" >&2
+    echo "        if that is not enough, 'memory archive' rolls the oldest entries." >&2
     rc=3
   else
     info "live size ${bytes}B / ${BUDGET_BYTES}B budget — OK"
@@ -616,7 +778,8 @@ case "${1:-}" in
   read)    shift; cmd_read "$@" ;;
   search)  shift; cmd_search "$@" ;;
   archive) shift; cmd_archive "$@" ;;
+  compact) shift; cmd_compact "$@" ;;
   check)   shift; cmd_check "$@" ;;
-  -h|--help|help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "usage: memory [--agent <name>] <add|confirm|retract|read|search|archive|check>   (see 'memory --help')" ;;
+  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "usage: memory [--agent <name>] <add|confirm|retract|read|search|archive|compact|check>   (see 'memory --help')" ;;
 esac
