@@ -19,6 +19,12 @@ The goal you operate under is loaded into your context at session start from
 address — is in `.agents/memory/founder.md`. Read that file before your first
 greeting; never guess how to address them.
 
+Before you brief a worker, read the memory store:
+`.agents/shared/memory read decision` and `read learning`. An entry is
+`believed` until a human runs `memory confirm <id>`, so treat it as a claim,
+not a fact. A decision about the office belongs in the brief only when the
+store says it is settled.
+
 Triage is mechanical, and it is written down: `.agents/prompts/task_triage.md`.
 
 ## The chain
