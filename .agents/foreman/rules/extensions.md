@@ -20,6 +20,29 @@ shape and no privacy rule.
   Foreman leads the worker.
 - Foreman does NOT dispatch itself — it is woken by `zolly foreman`.
 
+## A task in another repo has no reviewer — say so, do not assume one
+
+This office's reviewer is the only path to `main` **for the repo this office is
+deployed in**. Its authority follows that repo. A repo with no deployed office
+has no reviewer seat, no queue entry, and no result-file convention — its PRs
+have no reviewer **by construction**, not because nobody has looked.
+
+- **Name the door explicitly** in the brief and the report: "this PR is opened,
+  not merged; it needs <who>" — not "the PR is open", which reads as "waiting
+  for review" and is false when there is no reviewer to wait for.
+- **Do not lend this office's reviewer to another repo by one-off
+  instruction.** That turns "the reviewer merges" into "the reviewer merges
+  when asked", and the rule erodes without anyone deciding to erode it.
+- **Do not install an office into a repo whose `.agents/` is the template being
+  edited.** `install.sh` copies the checked-in template over the target's
+  `.agents/`, so installing would overwrite the files the task is changing.
+- The result file for such a task still goes in **this** repo, on this repo's
+  task branch, with the other repo's PR linked from it.
+- Route the defect report to the seat that works in that repo; write the exact
+  lines, the acceptance criteria, and **the commit it was measured against**.
+  A report that names the commit can be aged; one that names only a line number
+  is a pointer into the past.
+
 ## Where the rules live
 
 Each rule has one authoritative file. The reviewer points at the same files you
@@ -75,6 +98,26 @@ into its PR. The base is always the merge.
    same task; it already holds the context.
 5. Worker writes result to `.agents/results/<task-id>.md` **on the task branch** (in `.agents/worktrees/<task-id>/`), committed there before review. The main-checkout copy is never authoritative: the reviewer reads the branch copy.
 6. `zolly close <task-id>` → removes the worktree and deletes the branch
+
+### Merged branches are leftovers — delete them
+
+A branch whose work has landed is **not** a branch that still needs closing.
+It is a leftover that will confuse the next "which branch do I close" decision.
+Measure it with the **diff**, not the log:
+
+```sh
+git diff {{REMOTE}}/{{BASE_BRANCH}} origin/<branch> --stat   # empty = content merged
+git log --oneline {{REMOTE}}/{{BASE_BRANCH}}..origin/<branch>  # NOT the test
+```
+
+The log lies here. A squash merge leaves the branch's commits out of the base
+branch's ancestry, so the log lists every commit the branch contained while the
+diff is empty. A branch that looks like it holds twelve unmerged commits and
+holds nothing at all is worse than an obviously-stale one.
+
+So: diff empty + no open PR from it + no worktree using it = delete it, locally
+and on the remote. Also fast-forward the local base after a merge; a local base
+a commit behind the remote is a trap for the next agent.
 
 ## Reviewer invocation (with merge authority)
 
@@ -147,6 +190,19 @@ file, the fix is to have it state the decision neutrally — **not** to delete
 the file, and not to edit it yourself.
 
 ## How to tell whether a fix is live
+
+Three places a fix has to reach, and a fix in only one of them is a fix that
+comes back:
+
+| Place | Check |
+|---|---|
+| the **binary** the office runs | `/proc/<listener-pid>/exe` → live path, not `(deleted)` |
+| the **branch** it was committed on | `git log --oneline {{REMOTE}}/{{BASE_BRANCH}}..HEAD`, or the PR's state |
+| the **source repo's base branch** | `git show {{REMOTE}}/{{BASE_BRANCH}}:<file>` — content, not ancestry |
+
+A squash merge leaves no branch commit in the ancestry, so
+`git merge-base --is-ancestor` returns false for work that landed; use
+`gh pr view <n> --json state,mergedAt` and the content in the base tree.
 
 Three checks, and **each answers a different question**. Using the wrong one is
 how a fix gets "verified" while it is still broken.

@@ -50,6 +50,26 @@ the plain `pr-reviewer`; radio handles are already scoped per frequency.
 
 ## What you do
 
+**When the change touches `.agents/`, read the whole file, not just the diff —
+and read it as a file that ships.** `install.sh` copies this tree verbatim into
+every new office, so a change here is a change to every future office. Re-read
+the file you are judging in full before the diff: a persona or rule edited in
+one place can contradict the same file edited in another. Use the widest
+category the rule needs, because the rule travels.
+
+**Then read the memory store** — settled decisions and corrections earlier
+agents earned the hard way:
+
+```bash
+.agents/shared/memory read decision
+.agents/shared/memory read learning
+```
+
+An entry is `believed` until a human runs `memory confirm <id>`: treat it as a
+claim, not a fact. If a recorded learning contradicts a command in this file,
+the learning is the newer fact — say so in the verdict rather than following a
+command you know is wrong.
+
 When prompted with a task to review, you:
 1. Read the **branch** copy of the result file — `.agents/results/<task-id>.md` in `.agents/worktrees/<task-id>/`, never the main-checkout copy. An approval that exists only in the main checkout does not satisfy the gate.
 2. Read the worktree diff — `git diff {{REMOTE}}/{{BASE_BRANCH}}...HEAD` in `.agents/worktrees/<task-id>/`
@@ -142,7 +162,7 @@ When prompted with a task to review, you:
    decision neutrally, not to move the copy somewhere else. A hit on the bus is
    reported upward and not deleted — the ledger is shared across offices and is
    not ours to scrub.
-5. If the work passes **and** a `gate: human` result carries `approved: yes` on the branch copy immediately after the gate line (or is `gate: auto`): **merge the PR** (squash-merge, delete branch)
+5. If the work passes **and** a `gate: human` result carries `approved: yes` on the branch copy immediately after the gate line (or is `gate: auto`): **merge the PR** (squash-merge, delete branch). Approval for a different task does not satisfy it; check the same bytes the tool writes: `gate: human\napproved: yes`.
 6. Return **exactly one line** as your verdict:
 
 ```
@@ -176,6 +196,16 @@ gh pr merge <pr-number> --squash --delete-branch
 # Verify merge landed
 gh pr view <pr-number> --json merged,mergeCommit
 # Return PASS with commit SHA and PR URL
+```
+
+**`--delete-branch` must be explicit.** A repository can have
+`delete_branch_on_merge` turned off, in which case the task branch survives the
+merge and the next worktree can collide with it. Pass it every time, then
+verify the branch is gone:
+
+```bash
+gh pr view <pr-number> --json state,mergeCommit,url
+git ls-remote --heads origin 'foreman/<task-id>'   # must print nothing
 ```
 
 **Read the exit code, not the presence of output.** `gh pr checks` exits:

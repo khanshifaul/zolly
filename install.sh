@@ -468,9 +468,10 @@ else
     # copy of decisions, learnings and current state.
     BACKUP="$TARGET/.agents-backup-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$BACKUP"
-    # Keep everything except TAR_EXCLUDES: worktrees are checkouts (not office
-    # state), runs are transient, and the tool's target/ is build output that
-    # can be gigabytes. Everything else is recoverable.
+    # Keep everything except worktrees and runs: worktrees are checkouts (not
+    # office state) and runs are transient. The tool's target/ is build output
+    # and can be gigabytes, so it is excluded too. Everything else is
+    # recoverable.
     ( cd "$AGENTS_DIR" && tar -cf - $TAR_EXCLUDES . ) \
       | ( cd "$BACKUP" && tar -xf - )
     ok "previous office saved to $BACKUP"
@@ -551,6 +552,30 @@ else
         | ( cd "$AGENTS_DIR/zolly/tool" && tar -xf - )
       ok "restored the tool source"
     fi
+    # Restore every remaining office-local path the template does not ship.
+    # The named lists above are not enough: 2026-10-22 an install deleted
+    # calendar/, zolly/tools/, zolly/mcp/, a skill symlink and
+    # memory/entity_store.json because none of them was named. Restore any
+    # file or symlink that exists in the backup and not in the fresh tree,
+    # while skipping runtime state and build output.
+    restore_marker="$AGENTS_DIR/.restore-missing"
+    : > "$restore_marker"
+    find "$BACKUP" \( -type f -o -type l \) -print0 |
+      while IFS= read -r -d '' f; do
+        rel=${f#"$BACKUP"/}
+        case "$rel" in
+          worktrees/*|runs/*|memory/.work/*|memory/.lock|memory/*.tmp|zolly/tool/target/*) continue ;;
+          AGENTS.md|nudge.stamp|LAST_PROMPT.md|STATE.md|day.json|*.pid) continue ;;
+        esac
+        [ -e "$AGENTS_DIR/$rel" ] && continue
+        mkdir -p "$AGENTS_DIR/$(dirname "$rel")"
+        cp -a "$f" "$AGENTS_DIR/$rel" || exit 1
+        printf '%s\n' "$rel" >> "$restore_marker"
+      done
+    if [ -s "$restore_marker" ]; then
+      ok "restored office-local files the template does not ship"
+    fi
+    rm -f "$restore_marker"
   fi
 fi
 

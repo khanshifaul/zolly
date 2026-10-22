@@ -78,6 +78,69 @@ herdr accepts only lowercase letters, digits, `-` and `_` in an **agent name**,
 so the frequency is joined with `-`. The pane label produced by the radio join
 reads `seat@frequency`; that `@` form is a display label, never an agent name.
 
+## A seat can lose its herdr name while its pane stays alive
+
+An omp agent can lose its **name registration** and keep running. `herdr
+agent list` then shows the pane with `agent_status: working` and `name: null`.
+The seat vanishes from every name-based path at once:
+
+- `zolly reload` reports `not running (no reload)`
+- `herdr agent prompt <name>` returns `agent_not_ready`
+- `herdr agent get <name>` returns `agent_not_found`
+
+…even though the agent is live and on the radio bus under its handle. A seat
+that cannot be prompted by name is a seat the office cannot reload or
+dispatch, and nothing in `zolly doctor` reports it.
+
+Fix it by re-registering the pane:
+
+```sh
+herdr agent rename <pane-id> <expected-name>
+```
+
+`zolly`'s own `adopt_seat()` does exactly this by matching the tab label
+`<handle>@{{FREQUENCY}}`. Check for it after a seat restarts its own session.
+
+## A rebuilt binary does not reach the founder until the listener restarts
+
+The Telegram listener is a long-lived systemd user service
+(`zolly@{{FREQUENCY}}.service`, `ExecStart=… zolly telegram-serve`). Replacing
+`~/.local/bin/zolly` does **not** restart it: the running process keeps
+executing the deleted old inode, and `/proc/<pid>/exe` reads
+`…/zolly (deleted)`. The CLI picks up a new build immediately; the founder's
+Telegram `haa` and `status` keep running the old code. A fix can be *in the
+binary* and still not reach the founder.
+
+After rebuilding or reinstalling the tool, verify the listener actually
+carries it:
+
+```sh
+pid=$(systemctl --user show zolly@{{FREQUENCY}}.service -p MainPID --value)
+ls -la /proc/$pid/exe            # must be the live path, NOT "(deleted)"
+systemctl --user show zolly@{{FREQUENCY}}.service -p ExecMainStartTimestamp --value
+```
+
+`ls -la /proc/<pid>/exe` is the decisive check — a stale listener reads
+`…/zolly (deleted)`. It shows the symlink target **and** the timestamp in one
+output, so the "started before the rebuild" inference needs no second command.
+The timestamp is the second check: if the listener started **before** the
+binary was rebuilt, it is running old code. Compare whole seconds, not
+strings: the listener may have started in the same second as the build, and
+that is fine.
+
+**Re-measure this every time.** The answer changes when someone restarts the
+service, so a check that reported a stale listener an hour ago says nothing
+about the listener now. A fact about a long-lived process is a snapshot, not
+a standing truth.
+
+```sh
+systemctl --user restart zolly@{{FREQUENCY}}.service
+```
+
+Never claim a tool fix is live on the strength of the binary alone. The
+installer's own output only suggests a restart when the **unit file** changed,
+not when the binary changed — that gap is where this failure comes from.
+
 ## Telegram replies — mention the founder in a group
 
 `zolly telegram-reply --chat-id <id> --text "<text>"` — or the `telegram_reply`

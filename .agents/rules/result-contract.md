@@ -77,6 +77,31 @@ So:
   at a specific moment, and the moment is what makes it checkable. It is the
   record of where a rule **lives** that must be a phrase.
 
+## A defect report is a snapshot — name the commit it was measured against
+
+Every claim about a defect is true **of some moment**. The repo moves under
+the report, and a report that does not say what it measured against will be
+read against a tree it never saw.
+
+Measured 2026-10-22, guzia-high-school: a reviewer's defect report described
+the tool's `main` accurately, and by the time the message landed the fix had
+already landed — so the report was stale, not wrong. Several claims that
+session were stale the same way, and answering each one cost a round trip.
+
+So a defect claim names its subject:
+
+- **the commit or ref it was measured against** — "on `5cbeda3`,
+  `pending_gates` calls `queue::read_queue`" — not "the tool currently does".
+- **the command that produced the reading**, so a reader can re-run it.
+- **when the reading was taken**, when the answer can change under it.
+
+A report that names its subject stays readable after the fix lands: it becomes
+the record of what was true, and of when. One that does not becomes a claim
+about "now" that nobody can check.
+
+The same holds in the other direction: when a fix lands, say what it
+supersedes, so the old report is closed rather than contradicted.
+
 ## `## Verify` section rules
 
 - List every command you ran, with its output
