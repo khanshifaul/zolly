@@ -74,6 +74,66 @@ pub fn handle_status(root: &Path) -> Result<String> {
     }
 }
 
+/// Insert `approved: yes` into a result file's frontmatter, as its OWN line.
+///
+/// The marker must not disturb the `gate:` value. A gate value may be
+/// QUALIFIED — `gate: human — live cutover only` — and the qualifier names a
+/// decision a merge cannot make, which is exactly why a bare gate and a
+/// qualified gate are treated differently. Replacing the text
+/// `gate: human` in place splits such a value:
+///
+/// ```text
+/// gate: human — no k3s/kubectl access from this host
+/// ```
+///
+/// becomes
+///
+/// ```text
+/// gate: human
+/// approved: yes — no k3s/kubectl access from this host
+/// ```
+///
+/// The gate is now bare, and the reason it needed the founder has been
+/// demoted to a trailing remark on the approval line. The approval registers
+/// either way, so nothing looks broken — but the qualifier is gone, and a
+/// qualified gate is precisely the one a merge must not settle.
+///
+/// So the marker goes on a new line, immediately after the `gate:` line, and
+/// the gate value is left byte-for-byte intact.
+fn mark_approved(content: &str) -> String {
+    let mut out = String::with_capacity(content.len() + 16);
+    let mut inserted = false;
+    let mut in_frontmatter = false;
+    let mut saw_opening = false;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            if !in_frontmatter {
+                in_frontmatter = true;
+                saw_opening = true;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if in_frontmatter && !inserted && trimmed.to_lowercase().starts_with("gate:") {
+            out.push_str(line);
+            out.push_str("approved: yes\n");
+            inserted = true;
+            continue;
+        }
+        if in_frontmatter && saw_opening && trimmed == "---" {
+            in_frontmatter = false;
+        }
+        out.push_str(line);
+    }
+    if !inserted {
+        // No `gate:` line to mark — nothing to approve. Leave the file alone
+        // rather than inventing a gate.
+        return content.to_string();
+    }
+    out
+}
+
 /// `haa` / `ha` / `yes` writes `approved: yes` into every unsettled
 /// `gate: human` result. The branch copy is canonical, so the write is
 /// committed on the task branch; it never dispatches, pushes, or merges.
@@ -81,7 +141,7 @@ pub fn handle_approve(root: &Path) -> Result<String> {
     let mut approved = Vec::new();
     for (path, content) in pending_gates(root)? {
         let old = content.clone();
-        let new_content = content.replacen("gate: human", "gate: human\napproved: yes", 1);
+        let new_content = mark_approved(&content);
         fs::write(&path, &new_content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
         let id = path
@@ -650,5 +710,80 @@ mod tests {
         assert!(handle_status(&root).unwrap().contains("No tasks waiting"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A gate that is SETTLED but never signed off is still a gate.
+    ///
+    /// The approve test above deliberately uses a fixture with no `status:`
+    /// line, so the settled-status question never arises there — a settled
+    /// gate is a different case, and this is it. `status: done` plus an
+    /// unapproved `gate: human` is the finished-but-never-signed-off state
+    /// `queue::is_unresolved_gate` exists for.
+    #[test]
+    fn settled_gate_is_still_approvable() {
+        let content = "---\nid: t-settled\ngate: human\nstatus: done\n---\n\nbody\n";
+        let marked = mark_approved(content);
+        assert!(
+            marked.contains("approved: yes"),
+            "the settled gate must still be approvable: {marked}"
+        );
+        assert!(
+            marked.contains("gate: human"),
+            "the gate value must survive the approval: {marked}"
+        );
+    }
+
+    /// A QUALIFIED gate keeps its qualifier when it is approved.
+    ///
+    /// The qualifier names a decision a merge cannot make, which is the
+    /// whole reason a bare gate and a qualified gate are treated differently.
+    /// Injecting the marker in place would split the value and leave a bare
+    /// gate behind — the approval would register and the qualifier would be
+    /// gone, so nothing would look broken.
+    #[test]
+    fn qualified_gate_keeps_its_qualifier() {
+        let content =
+            "---\nid: t-qualified\ngate: human — no k3s/kubectl access from this host\n---\n\nbody\n";
+        let marked = mark_approved(content);
+
+        let fm = crate::queue::parse_frontmatter(&marked);
+        assert!(
+            fm.approved,
+            "the approval must register: {marked}"
+        );
+        assert_eq!(
+            fm.gate_value.as_deref(),
+            Some("human — no k3s/kubectl access from this host"),
+            "the gate value must be byte-for-byte intact: {marked}"
+        );
+        assert!(
+            !crate::queue::gate_is_bare(fm.gate_value.as_deref().unwrap_or("")),
+            "a qualified gate must not become bare: {marked}"
+        );
+        // And it must not be read as settled by a merge. An APPROVED gate is
+        // not waiting by definition — that is the point of the approval. The
+        // qualifier's job is to survive it, so check the value, not the
+        // waiting state: an approved BARE gate would also read as not
+        // waiting, and that is the shape the in-place injection produced.
+        assert!(
+            !crate::queue::gate_is_bare(fm.gate_value.as_deref().unwrap_or("")),
+            "an approved qualified gate must still read as qualified: {marked}"
+        );
+    }
+
+    /// The approval marker is its own line, and the gate line is untouched.
+    #[test]
+    fn approval_marker_is_its_own_line() {
+        let content = "---\nid: t-x\ngate: human\nstatus: done\n---\n\nbody\n";
+        let marked = mark_approved(content);
+        let gate_line = marked
+            .lines()
+            .find(|l| l.trim().to_lowercase().starts_with("gate:"))
+            .unwrap();
+        assert_eq!(gate_line.trim(), "gate: human", "{marked}");
+        assert!(
+            marked.lines().any(|l| l.trim() == "approved: yes"),
+            "the marker must be a line of its own: {marked}"
+        );
     }
 }
