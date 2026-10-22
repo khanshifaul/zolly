@@ -196,9 +196,33 @@ comes back:
 
 | Place | Check |
 |---|---|
-| the **binary** the office runs | `/proc/<listener-pid>/exe` → live path, not `(deleted)` |
+| the **binary** the office runs | **two checks** — see below |
 | the **branch** it was committed on | `git log --oneline {{REMOTE}}/{{BASE_BRANCH}}..HEAD`, or the PR's state |
 | the **source repo's base branch** | `git show {{REMOTE}}/{{BASE_BRANCH}}:<file>` — content, not ancestry |
+
+**The binary row needs TWO checks, because a replaced binary and a stale
+binary are different failures and only the first shows as `(deleted)`.**
+
+```sh
+# 1. is it the binary that is running, or a deleted inode?
+readlink /proc/<listener-pid>/exe        # live path, NOT "(deleted)"
+
+# 2. is it NEWER than the fix it is supposed to carry?
+stat -c %Y ~/.local/bin/zolly            # the binary's mtime
+git log -1 --format=%ct <fix-commit>     # the fix's commit time
+```
+
+Check 1 catches a **replaced** binary: the old inode is deleted, so the path
+reads `.../zolly (deleted)`. Check 2 catches a **stale** binary: the file was
+never replaced, it is simply OLDER than the fix, and check 1 passes because
+the path is live. Measured 2026-10-22: the running binary's mtime was 100
+seconds older than the fix's commit, the listeners had started after the
+install so the path was live with no `(deleted)` — and every check in the
+single-check version passed while the founder ran the pre-fix code.
+
+The binary's mtime must be **newer** than the commit it carries. A binary
+built from a tree that predates the fix cannot contain it, however live its
+path looks.
 
 A squash merge leaves no branch commit in the ancestry, so
 `git merge-base --is-ancestor` returns false for work that landed; use
