@@ -105,6 +105,20 @@ supersedes, so the old report is closed rather than contradicted.
 ## `## Verify` section rules
 
 - List every command you ran, with its output
+- **Put the command's OUTPUT in the file, not a count you computed.** When a
+  claim is a number, the reader must be able to re-run the command and see the
+  same number. A number that only exists in the prose is a number nobody can
+  check, and one that contradicts its own command is worse than no number at
+  all. Measured 2026-10-22, guzia-high-school: a message quoted a command that
+  printed `2` next to a sentence claiming `45` - the command had been mangled
+  by shell quoting, and the prose was right. An agent running it would have
+  seen a number contradicting the claim and had to decide which to believe,
+  which is the state this whole contract exists to end.
+- **Count strings by running them.** A length, a count, a size - take it from
+  the command, not from arithmetic done in your head. The same report's count
+  was 38 because the placeholder `worker-<frequency>-` was counted instead of
+  the rendered name: 25 characters of prefix plus a 20-character task id is 45,
+  which is 13 over herdr's 32-character cap.
 - If a test exists and you did not run it, say so
 - If you cannot verify something, say so — do not claim it passes
 - The reviewer reads this section. If it is missing, the reviewer OBJECTIONs.

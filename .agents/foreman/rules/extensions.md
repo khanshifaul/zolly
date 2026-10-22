@@ -106,14 +106,23 @@ It is a leftover that will confuse the next "which branch do I close" decision.
 Measure it with the **diff**, not the log:
 
 ```sh
-git diff {{REMOTE}}/{{BASE_BRANCH}} origin/<branch> --stat   # empty = content merged
+git diff {{REMOTE}}/{{BASE_BRANCH}}...origin/<branch> --stat   # THREE dots: empty = content merged
 git log --oneline {{REMOTE}}/{{BASE_BRANCH}}..origin/<branch>  # NOT the test
 ```
 
-The log lies here. A squash merge leaves the branch's commits out of the base
-branch's ancestry, so the log lists every commit the branch contained while the
-diff is empty. A branch that looks like it holds twelve unmerged commits and
-holds nothing at all is worse than an obviously-stale one.
+**Three dots, not two.** The three-dot form compares the branch against the
+**merge-base**, so it shows only what that branch added. The two-dot form
+compares the two tips directly, so once the base branch has advanced past the
+merge-base it shows the base's *later* changes as deletions - a diff full of
+files the branch never touched. Measured 2026-10-22, khanshifaul/zolly: the
+two-dot form on a branch whose content was entirely in main showed three files
+changed and 178 deletions, all of them main's own later work. The three-dot
+form on the same branch showed the five lines the branch actually added.
+
+The log lies here too. A squash merge leaves the branch's commits out of the
+base branch's ancestry, so the log lists every commit the branch contained
+while the diff is empty. A branch that looks like it holds twelve unmerged
+commits and holds nothing at all is worse than an obviously-stale one.
 
 So: diff empty + no open PR from it + no worktree using it = delete it, locally
 and on the remote. Also fast-forward the local base after a merge; a local base
@@ -196,9 +205,33 @@ comes back:
 
 | Place | Check |
 |---|---|
-| the **binary** the office runs | `/proc/<listener-pid>/exe` → live path, not `(deleted)` |
-| the **branch** it was committed on | `git log --oneline {{REMOTE}}/{{BASE_BRANCH}}..HEAD`, or the PR's state |
+| the **binary** the office runs | **two checks** — see below |
+| the **branch** it was committed on | `git diff {{REMOTE}}/{{BASE_BRANCH}}...HEAD --stat` — **three dots**; empty = the content is merged. **Not** the log form, and **not** the two-dot diff — see *Merged branches are leftovers* below |
 | the **source repo's base branch** | `git show {{REMOTE}}/{{BASE_BRANCH}}:<file>` — content, not ancestry |
+
+**The binary row needs TWO checks, because a replaced binary and a stale
+binary are different failures and only the first shows as `(deleted)`.**
+
+```sh
+# 1. is it the binary that is running, or a deleted inode?
+readlink /proc/<listener-pid>/exe        # live path, NOT "(deleted)"
+
+# 2. is it NEWER than the fix it is supposed to carry?
+stat -c %Y ~/.local/bin/zolly            # the binary's mtime
+git log -1 --format=%ct <fix-commit>     # the fix's commit time
+```
+
+Check 1 catches a **replaced** binary: the old inode is deleted, so the path
+reads `.../zolly (deleted)`. Check 2 catches a **stale** binary: the file was
+never replaced, it is simply OLDER than the fix, and check 1 passes because
+the path is live. Measured 2026-10-22: the running binary's mtime was 100
+seconds older than the fix's commit, the listeners had started after the
+install so the path was live with no `(deleted)` — and every check in the
+single-check version passed while the founder ran the pre-fix code.
+
+The binary's mtime must be **newer** than the commit it carries. A binary
+built from a tree that predates the fix cannot contain it, however live its
+path looks.
 
 A squash merge leaves no branch commit in the ancestry, so
 `git merge-base --is-ancestor` returns false for work that landed; use
