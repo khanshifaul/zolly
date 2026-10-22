@@ -57,18 +57,57 @@ pub(super) struct ServeLock {
     path: PathBuf,
 }
 
+/// Whether the pid recorded in a serve lockfile still belongs to a `zolly`
+/// process.
+///
+/// Testing that `/proc/<pid>` exists is not enough. The kernel reuses pids, so
+/// a lock left behind by a crashed serve starts blocking every restart as soon
+/// as that number is handed to an unrelated process — permanently, because the
+/// guard only ever consults the number. Two services in this office sat in
+/// `activating (auto-restart)` at 588 and 597 restarts on exactly that: their
+/// lockfiles held pids the kernel had since given to `wireplumber` and
+/// `pipewire-pulse`.
+///
+/// The lock is honoured only when the process is inspectable and is a zolly
+/// binary. An unreadable `cmdline` still counts as alive, which keeps the
+/// previous fail-safe behaviour where this cannot see in.
+fn lock_holder_running(pid: u32) -> bool {
+    if !Path::new(&format!("/proc/{}", pid)).exists() {
+        return false;
+    }
+    match fs::read(format!("/proc/{}/cmdline", pid)) {
+        Ok(raw) => {
+            // A kernel thread or a zombie has an empty cmdline. Neither can be
+            // the serve being guarded against, and neither will ever drop the
+            // lock, so neither may block startup.
+            if raw.is_empty() {
+                return false;
+            }
+            String::from_utf8_lossy(&raw)
+                .split('\0')
+                .filter(|arg| !arg.is_empty())
+                .any(|arg| {
+                    arg.rsplit('/')
+                        .next()
+                        .is_some_and(|name| name.starts_with("zolly"))
+                })
+        }
+        Err(_) => true,
+    }
+}
+
 impl ServeLock {
     pub(super) fn acquire(path: PathBuf) -> Result<Self> {
         if let Ok(contents) = fs::read_to_string(&path) {
             if let Ok(pid) = contents.trim().parse::<u32>() {
-                if Path::new(&format!("/proc/{}", pid)).exists() {
+                if lock_holder_running(pid) {
                     anyhow::bail!(
                         "Another zolly serve instance is already running (pid {})",
                         pid
                     );
                 }
                 eprintln!(
-                    "Removing stale lockfile {} (pid {} is not running)",
+                    "Removing stale lockfile {} (pid {} is not a running zolly)",
                     path.display(),
                     pid
                 );
@@ -746,6 +785,100 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn a_pid_that_does_not_exist_never_holds_the_lock() {
+        // Above the kernel's pid ceiling, so this can never come to exist.
+        assert!(!lock_holder_running(4_194_304));
+    }
+
+    #[test]
+    fn a_live_process_of_another_program_does_not_hold_the_lock() {
+        // The regression. A stale lock keeps the pid of a crashed serve; the
+        // kernel then hands that number to some unrelated daemon. Existence of
+        // /proc/<pid> used to mean "still running", which blocked startup
+        // forever. Find any live process that is not zolly and require that it
+        // is not mistaken for a lock holder.
+        let other = fs::read_dir("/proc")
+            .expect("/proc must be readable")
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+            .find(|pid| {
+                let raw = fs::read(format!("/proc/{}/cmdline", pid)).unwrap_or_default();
+                if raw.is_empty() {
+                    return false;
+                }
+                let cmd = String::from_utf8_lossy(&raw);
+                !cmd
+                    .split('\0')
+                    .filter(|a| !a.is_empty())
+                    .any(|a| a.rsplit('/').next().is_some_and(|n| n.starts_with("zolly")))
+            })
+            .expect("some live process is not zolly");
+        assert!(
+            !lock_holder_running(other),
+            "pid {} is alive but is not a zolly; the lock must be reclaimed",
+            other
+        );
+    }
+
+    #[test]
+    fn a_live_zolly_holds_the_lock() {
+        // The test binary is itself a zolly build, so our own pid is a real
+        // holder. This is the case the lock exists for: a second serve must
+        // not start on top of the first.
+        assert!(lock_holder_running(std::process::id()));
+    }
+
+    #[test]
+    fn acquire_reclaims_a_lock_from_a_reused_pid_and_releases_on_drop() {
+        let other = fs::read_dir("/proc")
+            .expect("/proc must be readable")
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+            .find(|pid| {
+                let raw = fs::read(format!("/proc/{}/cmdline", pid)).unwrap_or_default();
+                if raw.is_empty() {
+                    return false;
+                }
+                !String::from_utf8_lossy(&raw)
+                    .split('\0')
+                    .filter(|a| !a.is_empty())
+                    .any(|a| a.rsplit('/').next().is_some_and(|n| n.starts_with("zolly")))
+            })
+            .expect("some live process is not zolly");
+
+        let dir = std::env::temp_dir().join(format!("zolly-lock-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("telegram_serve.lock");
+        fs::write(&path, other.to_string()).expect("write a lock naming the unrelated pid");
+
+        let lock = ServeLock::acquire(path.clone())
+            .expect("a lock whose pid was reused by another program must be reclaimed");
+        assert!(path.exists(), "the reclaimed lock must then be held");
+        drop(lock);
+        assert!(!path.exists(), "dropping the guard must remove the lock");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_refuses_a_lock_held_by_a_live_zolly() {
+        let dir = std::env::temp_dir().join(format!("zolly-lock-busy-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("telegram_serve.lock");
+        fs::write(&path, std::process::id().to_string()).expect("write a lock naming ourselves");
+
+        let err = match ServeLock::acquire(path.clone()) {
+            Ok(_) => panic!("a live zolly holds the lock"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("already running"), "unexpected error: {err}");
+        assert!(path.exists(), "a refused acquire must not delete the lock");
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn take_pending_removes_chat_from_pending() {
