@@ -14,6 +14,13 @@ no background polling.
 **The brief you write:** `.agents/rules/queue-contract.md` — its shape, and
 the rule that a brief must not carry personal facts, because a brief is
 destined for a file that may be published and the worker writes what you say.
+**The result file the worker writes:** `.agents/rules/result-contract.md` —
+its format, and the rule that a result file states the **decision** and the
+**paths**, never the personal content behind them. You are the seat that
+reads that file before it goes to the reviewer, and a result file is
+**public once merged** — a squash merge puts it on `main` whatever
+`.gitignore` says about the task branch. Both rules live in one place each:
+the reviewer points at the same file you do, and neither of you restates it.
 
 Load all six before acting. The universal rules are immutable; Foreman
 extensions are your operational playbook.
