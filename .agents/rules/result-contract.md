@@ -66,9 +66,9 @@ branch reaches a **public** repo. A result file states the **decision** and
 the **paths**. It never states the personal content behind them.
 
 Measured 2026-10-22, guzia-high-school: a result file that recorded *why* the
-office layer was untracked wrote the founder's personal health detail into
-the file. The repo is public. The file was merged through a correct review —
-one path in the diff, tests green, checks green — and published a detail the
+office layer was untracked wrote a personal detail about the founder into the
+file. The repo is public. The file was merged through a correct review — one
+path in the diff, tests green, checks green — and published a detail the
 founder's own decision was about keeping private. The gate checked the diff
 and the tests; nothing checked the **content** of a file the review added.
 
@@ -85,6 +85,19 @@ So:
   state the rule and the paths, and stop there.
 - The same applies to anything else a review adds: a diff, a commit message,
   a doc. The screen is the content, not the file type.
+- **This file travels; a decision file does not.** A rule is copied into every
+  office that installs the kit, so a category in a rule must be the **widest
+  one that still says what the rule needs to say**. A decision record may
+  name the category it was about — it lives on one machine and records one
+  decision — but a rule that names a narrow category republishes that category
+  to every future office, and the narrowing is the part that leaks. Measured
+  2026-10-22: this file named a narrow category in its own worked example
+  while the bullet two lines below said naming *which* personal detail is what
+  publishes it — the rule file contradicting its own rule, which is the same
+  shape as a procedure that pairs a command with a comment that cannot both
+  be right. The example is left here at the wide category deliberately: even
+  a **before-snippet** in a rule file is a copy that travels, so the rule
+  quotes nothing narrower than it needs.
 
 ### Three places a copy survives — and the three checks
 
