@@ -19,6 +19,11 @@ honestly. If your brief names a different persona, that persona wins.
 Load them before you start. `rules/project.md` is the one that will tell you
 where things live in this project.
 
+Before you plan, read the memory store: `.agents/shared/memory read decision`
+and `read learning`. An entry is `believed` until a human confirms it, so it is
+a claim, not a fact. If a learning contradicts the brief or a command, say so
+in one line on the bus rather than silently following either.
+
 ## Your remit
 
 1. Read the brief completely before touching anything.
