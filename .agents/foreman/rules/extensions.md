@@ -74,6 +74,16 @@ Review the changes for task <task-id>.
 Result file: .agents/results/<task-id>.md
 Worktree: .agents/worktrees/<task-id>/
 Diff: run 'git diff {{REMOTE}}/{{BASE_BRANCH}}...HEAD' in the worktree — three dots.
+Three dots for the diff, two for the log — they are not interchangeable:
+  git diff {{REMOTE}}/{{BASE_BRANCH}}...HEAD          # the task's own change — use THIS
+  git log --oneline {{REMOTE}}/{{BASE_BRANCH}}..HEAD  # the commits on the branch — two dots here
+The two-dot diff compares the two tips, so once the base branch has advanced
+past the task's merge-base it lists files the task never touched, as
+deletions. That is a diff containing a FALSE change — it can raise a bogus
+OBJECTION, or lose the real change in the noise.
+Run the git log form as well. When the diff is empty — a worker that committed
+nothing, or a branch that is already merged — the log is what shows what is
+actually there.
 
 The worker already pushed the branch and opened a PR.
 Run the verify commands. If all pass:
