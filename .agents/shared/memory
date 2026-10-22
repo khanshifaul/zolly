@@ -472,6 +472,22 @@ cmd_confirm() {
 # A promoted learning leaves the live store because it is now a rule. The
 # entry is NOT deleted — deletion loses the history the store exists for. Its
 # status becomes `retracted` and it names the file it was promoted into.
+#
+# IDEMPOTENT: an entry carries AT MOST ONE `Promoted to:` line, and
+# re-retracting must not add a second one. A command that creates the surplus
+# `compact` exists to reclaim is the bug, not the remedy: the over-budget error
+# tells an agent to retract, so a retract that grows the store walks it straight
+# into the failure it is trying to fix. The file is rewritten only when the
+# bytes actually change, so repeating the same retraction is a byte-for-byte
+# no-op and the message says "already retracted", never a fresh retraction.
+#
+# POLICY on a changed target: the NEW target wins. The recorded line is
+# replaced and the message names both the discarded and the kept target.
+# Keeping the first would strand a wrong target with no supported way to
+# correct it — the store is committed, so a replaced target survives in git
+# history if it mattered. This matches `compact`, which keeps the FIRST
+# `Promoted to:` line because that is the newest: retract only ever writes one,
+# immediately after the header.
 cmd_retract() {
   local id="" target="" f new="" rc=0
   while [ $# -gt 0 ]; do
@@ -484,28 +500,103 @@ cmd_retract() {
   done
   [ -n "$id" ] || die "usage: memory retract <id> [--promoted-to <file>]"
   acquire_lock || exit 1
+  local diag="$WORK/retract.diag"
+  mkdir -p "$WORK"
+  : >"$diag"
+
   for f in "$DECISIONS" "$LEARNINGS" "$CURRENT"; do
     [ -f "$f" ] || continue
     grep -qE "^## ${id} \|" "$f" || continue
-    mkdir -p "$WORK"
     new="$WORK/retract"
-    awk -v id="$id" -v target="$target" '
+
+    # One pass over the file. Emit the target entry's header, then exactly one
+    # pointer line. With a target, the new line is emitted and every existing
+    # pointer in the entry's header region is dropped (and recorded for the
+    # message). Without a target the existing lines pass through untouched, so
+    # a no-target retract can never discard a recorded home. The pointer region
+    # ends at the first non-pointer line, so body text is not mistaken for one.
+    awk -v id="$id" -v target="$target" -v diag="$diag" '
       /^## [DLC]-[0-9]{4} \|/ {
+        inside = 0; region = 0
         n = split($0, p, "|")
         if (p[1] ~ ("^## " id "[ \t]*$")) {
           for (i = 1; i <= n; i++) { gsub(/^[ \t]+|[ \t]+$/, "", p[i]) }
           sub(/^##[ \t]+/, "", p[1])
+          printf "R\t%s\n", (p[3] == "retracted" ? "1" : "0") >> diag
           p[3] = "retracted"
           $0 = "## " p[1] " | " p[2] " | " p[3] " | " p[4]
-          if (target != "") { print; print "Promoted to: " target; next }
+          print
+          if (target != "") print "Promoted to: " target
+          inside = 1; region = 1
+          next
         }
+        print
+        next
       }
+      inside && region && /^Promoted to: / {
+        printf "P\t%s\n", substr($0, 14) >> diag
+        if (target != "") next
+      }
+      inside && region && $0 !~ /^Promoted to: / { region = 0 }
       { print }
     ' "$f" >"$new" 2>/dev/null
-    if atomic_write "$new" "$f"; then
-      info "$id retracted from $(basename "$f")${target:+ — promoted to $target}"
+
+    local was="" n_promo=0 first_promo="" all_promo="" others="" tag val
+    while IFS=$'\t' read -r tag val; do
+      case "$tag" in
+        R) was="$val" ;;
+        P) n_promo=$((n_promo + 1))
+           [ -n "$first_promo" ] || first_promo="$val"
+           all_promo="${all_promo:+$all_promo, }$val" ;;
+      esac
+    done <"$diag"
+    others="${all_promo#"$first_promo"}"
+    others="${others#, }"
+
+    local wrote=-1 base
+    base="$(basename "$f")"
+    if cmp -s "$new" "$f"; then
+      rm -f "$new"
+      wrote=0
+    elif atomic_write "$new" "$f"; then
+      wrote=1
     else
+      echo "memory: retract write failed for $base — file unchanged" >&2
+      rm -f "$new"
       rc=1
+    fi
+    [ "$wrote" -ge 0 ] || break
+
+    local prefix
+    if [ "$was" = "1" ]; then prefix="$id already retracted in $base"
+    else prefix="$id retracted from $base"; fi
+
+    if [ "$wrote" -eq 0 ]; then
+      if [ "$was" = "1" ] && [ "$n_promo" -gt 1 ]; then
+        info "$prefix — $n_promo recorded 'Promoted to:' lines ($all_promo); unchanged — run 'memory compact' to collapse them"
+      elif [ "$was" = "1" ] && [ -n "$first_promo" ]; then
+        info "$prefix — promoted to $first_promo (unchanged)"
+      elif [ "$was" = "1" ]; then
+        info "$prefix — no promotion target recorded (unchanged)"
+      else
+        info "$prefix"
+      fi
+    elif [ -n "$target" ] && [ "$n_promo" -gt 0 ]; then
+      if [ "$n_promo" -gt 1 ] && [ "$first_promo" = "$target" ]; then
+        info "$prefix — collapsed $n_promo recorded 'Promoted to:' lines to one ($target)${others:+; discarded: $others}"
+      elif [ "$n_promo" -gt 1 ]; then
+        info "$prefix — promotion target replaced: $n_promo recorded pointers ($all_promo) -> $target"
+      else
+        info "$prefix — promotion target replaced: $first_promo -> $target"
+      fi
+    elif [ -n "$target" ]; then
+      if [ "$was" = "1" ]; then
+        info "$prefix — promotion target recorded: $target"
+      else
+        info "$prefix — promoted to $target"
+      fi
+    else
+      info "$prefix"
     fi
     break
   done

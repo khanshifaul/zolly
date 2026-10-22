@@ -94,6 +94,64 @@ class MemoryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no entry L-0999", result.stderr)
 
+    def test_retract_twice_is_idempotent_and_does_not_grow(self):
+        self.assertEqual(
+            self.run_memory("add", "learning", "Retries need a filed r2.").returncode, 0
+        )
+        first = self.run_memory(
+            "retract", "L-0001", "--promoted-to", ".agents/rules/workflows.md"
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = (self.dir / "learnings.md").stat().st_size
+
+        second = self.run_memory(
+            "retract", "L-0001", "--promoted-to", ".agents/rules/workflows.md"
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+
+        after = (self.dir / "learnings.md").stat().st_size
+        text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        self.assertEqual(after, before, "a second retract must not grow the store")
+        self.assertEqual(text.count("Promoted to: "), 1, "one pointer per entry")
+        self.assertIn("already retracted in learnings.md", second.stdout)
+        self.assertIn("unchanged", second.stdout)
+        self.assertNotIn("retracted from", second.stdout)
+
+        # retract must not create work for compact: no duplicate pointer to
+        # reclaim. compact may still reclaim the body.
+        compacted = self.run_memory("compact")
+        self.assertEqual(compacted.returncode, 0, compacted.stderr)
+        self.assertNotIn("duplicate", compacted.stdout)
+        self.assertEqual(
+            (self.dir / "learnings.md")
+            .read_text(encoding="utf-8")
+            .count("Promoted to: "),
+            1,
+        )
+
+    def test_retract_reports_a_replaced_target(self):
+        self.assertEqual(self.run_memory("add", "learning", "one").returncode, 0)
+        self.assertEqual(
+            self.run_memory(
+                "retract", "L-0001", "--promoted-to", ".agents/rules/a.md"
+            ).returncode,
+            0,
+        )
+        result = self.run_memory(
+            "retract", "L-0001", "--promoted-to", ".agents/rules/b.md"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        text = (self.dir / "learnings.md").read_text(encoding="utf-8")
+        self.assertEqual(text.count("Promoted to: "), 1)
+        self.assertIn("Promoted to: .agents/rules/b.md", text)
+        self.assertNotIn(".agents/rules/a.md", text)
+        self.assertIn("already retracted in learnings.md", result.stdout)
+        self.assertIn(
+            "promotion target replaced: .agents/rules/a.md -> .agents/rules/b.md",
+            result.stdout,
+        )
+
     def test_check_reports_ok_for_a_fresh_store(self):
         self.assertEqual(self.run_memory("add", "current", "One task in flight.").returncode, 0)
         result = self.run_memory("check")
