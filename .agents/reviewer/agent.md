@@ -145,6 +145,25 @@ failure, on a PR whose checks all passed. A reviewer that reads "exit 1" as "CI
 is failing" objects on a green PR and bounces every slow runner. Ask for the
 buckets instead; they need no exit-code reasoning at all:
 
+**Why this trap survives: it depends on the repo, not on the reviewer.** Where
+the base branch **is** protected, `--required` works and the defect is
+invisible. Where it is not, the same command on the same green PR exits `1`.
+So the failure appears only in the offices that have no branch protection —
+the ones least likely to have CI configured, and the ones whose review gate
+is therefore decorative. Measured 2026-10-22 on a fully green PR:
+`gh pr checks <n> --required` -> "no required checks reported", exit `1`;
+`gh pr checks <n>` -> every check `pass`, exit `0`. The precondition is
+`gh api repos/<owner>/<repo>/branches/main/protection` -> `404 Branch not
+protected`.
+
+**Read the command and the comment beside it together.** A procedure that
+pairs `gh pr checks <n> --required` with "# If CI is failing, OBJECTION — do
+not merge" is not missing a rule; it is **contradicting itself**, because on
+an unprotected base those two lines cannot both be right. When you find a
+command and a comment that disagree, the command is the one to change — a
+comment can be right and a command still wrong, and the comment is the part
+a reader is most likely to trust.
+
 ```bash
 gh pr checks <pr-number> --json name,state,bucket
 ```
