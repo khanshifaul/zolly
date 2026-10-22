@@ -99,37 +99,38 @@ When prompted with a task to review, you:
    destroys the inbox state it is auditing. And read the bus count as **"this
    many in this office", not a census**: inside a pane `radio log` selects
    only your own frequency's traffic, so a clean log is not a clean bus —
-   the ledger is shared. The exact figure, and the caveat that the placeholder
-   matches itself, are in the same file.
+   the ledger is shared. The exact ledger query, and its local-term handling,
+   are in the same file.
 
-   **And screen the PUBLISHED surface of the PR you are reviewing**, with the
-   one command that has no artefacts in it by construction:
+   **And screen what this PR adds or changes**, not the base tree:
    ```bash
-   git grep -n -w "<the founder-sensitive term>" origin/main
+   printf 'sensitive term: ' >&2; read -r -s term; echo >&2
+   : "${term:?empty term — refusing to match every line}"
+   git diff --name-only --diff-filter=AM {{REMOTE}}/{{BASE_BRANCH}}...HEAD |
+     while read -r f; do grep -nwF -- "$term" "$f"; done
    ```
-   This is the check you run on the change in front of you; the three above are
-   the office-wide sweep. It names the file, the line and the matched text, and
-   it searches only **tracked** files, so it cannot return a compiled artefact
-   or a scratch directory. The command is the part that survives: a rule that
-   only says a failure exists is a prohibition, and a prohibition is what a
-   future agent reads and skips.
+   `git grep {{REMOTE}}/{{BASE_BRANCH}}` searches the base and cannot see the
+   PR's own new content; this reads the files at HEAD, which is the copy the
+   merge would publish. It names the file, line and matched text. It is the
+   check you run on the change in front of you; the office-wide sweep is above.
 
-   Use the **whole-word, case-sensitive** form in all three. A case-insensitive
+   Use the **whole-word, case-sensitive** form for the two grep checks. A
+   case-insensitive
    search matches inside unrelated words (or a base64 blob); a privacy check
    that cries wolf is a privacy check that gets ignored. Do not scan for the
    term together with the phrase around it either — a file that removed the term
    legitimately quotes it while describing the removal, and a compound pattern
    reports that clean file as dirty. And do not paste the term into a check
-   command you send over the bus or leave in a note: the canonical form of a
-   privacy check is the placeholder, never the term.
+   command you send over the bus or leave in a note: read it from a local
+   variable at run time, and never write the value down.
 
    **Two different copies, and they need two different rules.** Measured
    2026-10-22 on a shared ledger: 76 occurrences sat in a **command** context
    and 46 in **prose**.
    - A **command that contains the term** (`grep -w <term> …`) is
      diligence-shaped but still names it. The term must not appear in a
-     command either. This one is easy to fix by habit: write the argument as
-     the placeholder.
+     command either. This one is easy to fix by habit: read the argument from a
+     local variable at run time.
    - **Prose that names the condition** is disclosure, not diligence — "the
      founder has <term>", "3+ files mention the founder has <term>". This is
      the actual leak, and it is the one a tree-and-inbox audit misses, because
@@ -207,17 +208,17 @@ protected`.
 **Read the command and the comment beside it together.** A procedure that
 pairs `gh pr checks <n> --required` with "# If CI is failing, OBJECTION — do
 not merge" is not missing a rule; it is **contradicting itself**, because on
-an unprotected base those two lines cannot both be right. When you find a
-command and a comment that disagree, the command is the one to change — a
-comment can be right and a command still wrong, and the comment is the part
-a reader is most likely to trust.
+an unprotected base those two lines cannot both be right. When a
+command and its comment disagree, verify the intended behaviour and fix
+whichever one is wrong; neither side is authoritative by position.
 
 ```bash
 gh pr checks <pr-number> --json name,state,bucket
 ```
 
 `bucket` is one of `pass`, `fail`, `pending`, `skipping`, `cancel`. Merge only
-when no bucket is `fail`; `pending` means wait.
+when every bucket is `pass` (or `skipping` where that is explicitly acceptable);
+`pending` means wait, and `fail` or `cancel` means OBJECTION.
 
 If CI checks are failing, OBJECTION. **Pending is not failing** — wait or
 re-check until the checks conclude; do not merge before they pass, and

@@ -139,14 +139,21 @@ and only one of them is reviewed before it lands:
 | the notes | `.agents/inbox/` | yes — machine-local |
 | the bus | the radio ledger, `~/.local/share/herdr-radio/radio.db` | **no** — it is in no git repository at all |
 
-Run all three, as written:
+Run the three, with the term held in a local shell variable — never in a file
+or a command you commit:
 
 ```bash
-grep -ril "<the founder-sensitive term>" .agents/ \
+printf 'sensitive term: ' >&2; read -r -s term; echo >&2
+: "${term:?empty term — refusing to match every line}"
+
+grep -rlFw -- "$term" .agents/ \
   --exclude-dir=trash --exclude-dir=node_modules --exclude-dir=target \
   --exclude='*.rlib' --exclude='*.rmeta' --exclude='*.so'          # the tree
-grep -ril "<the founder-sensitive term>" .agents/inbox/            # the notes
-radio log --limit 500 | grep -ci "<the founder-sensitive term>"   # the bus
+grep -rlFw -- "$term" .agents/inbox/                              # the notes
+sqlite3 ~/.local/share/herdr-radio/radio.db <<SQL
+.parameter set @term "$term"
+SELECT id, from_handle FROM messages WHERE instr(text, @term) > 0;
+SQL
 ```
 
 **The tree check excludes, and the exclusions are not optional.** Without them
@@ -155,7 +162,7 @@ the check **cries wolf**: on a clean office, measured 2026-10-22, it returned
 artefacts (`.rlib`, `.rmeta` — Rust dependencies, where the term appears as a
 coincidental byte run inside a binary), and the rest were markdown in
 `.agents/trash/`, a gitignored scratch folder. The **published** surface was
-clean the whole time: `git grep -n -w "<the founder-sensitive term>" origin/main`
+clean the whole time: `git grep -nwF -- "$term" origin/main`
 returns nothing.
 
 A privacy check that reports hits on a clean office teaches its reader to
@@ -168,7 +175,7 @@ agent hits first because it greps a directory and gets a wall of paths.
 "tracked files, and `.agents/results/` once merged". The exclusions make the
 command match that definition: what is left is files a person could read and a
 reader could see. If you want the published surface exactly, use
-`git grep -n -w "<the founder-sensitive term>" origin/main` — that one has no
+`git grep -nwF -- "$term" origin/main` — that one has no
 artefacts in it by construction, because git only searches tracked files.
 
 `radio log`, **never** `radio show <id>`. `radio show` is not a read — it is an
@@ -198,37 +205,23 @@ across offices**, so a clean log is not a clean bus. A rule that names the
 log as THE check lets a dirty ledger pass because the dirty messages belong
 to somebody else.
 
-For the **exact** count across the whole ledger, the ledger itself is a SQLite
-database:
-```bash
-sqlite3 ~/.local/share/herdr-radio/radio.db \
-  "SELECT count(*) FROM messages WHERE text LIKE '%<the founder-sensitive term>%';"
-```
-Use that when the number matters and the log's scope would mislead.
-
-**One wrinkle to know about this command.** Written literally, the placeholder
-in the pattern matches the placeholder itself — and several messages
-legitimately contain the placeholder, because a report that correctly used
-`<the founder-sensitive term>` instead of the term IS the behaviour this rule
-asks for. Measured 2026-10-22: that query returned **4**, all of them
-correctly-written reports, and **0** real leaks. So a non-zero result here is
-usually the rule working, not the rule failing. **Read the matching message
-ids, not just the count** — `SELECT id, from_handle FROM messages WHERE …` —
-and judge each one. The screen is the screen; the census needs a human.
+The SQLite query reads the **whole shared ledger**, not just this office's
+scope. It is the gate; `radio log` remains a lower-bound, human-readable
+screen, never the census. The query is a literal substring match and returns
+message ids, so read each row and judge it — the census still needs a human.
 
 **The term must not appear in a command either, not only in prose.** The
 deceptive copy is a verification command quoted in a message, a note or a commit
 message: the agent that quotes it did what looks like diligence, and the copy
-still outlives the tree. **The canonical form of a privacy check in any message
-or file is the placeholder, never the term itself** — the three lines above are
-written that way on purpose.
+still outlives the tree. The commands above read the value into a local `term`
+variable; the term itself never appears in this file or in shell history.
 
 **The bus is shared across offices.** The ledger holds other offices' messages,
 so a clean result on this office's frequency is not a clean bus; the check
 covers every frequency in it.
 
 **The ledger is a record and is not ours to scrub.** It holds messages that are
-not this office's, so the fix is the rule going forward — the placeholder above
+not this office's, so the fix is the rule going forward — the local `term` value above
 — not a deletion. Report a bus hit; do not edit the ledger.
 
 The rule is stated as a **category** — "a personal detail about the founder" —

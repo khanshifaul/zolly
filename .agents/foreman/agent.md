@@ -22,7 +22,7 @@ reads that file before it goes to the reviewer, and a result file is
 `.gitignore` says about the task branch. Both rules live in one place each:
 the reviewer points at the same file you do, and neither of you restates it.
 
-Load all six before acting. The universal rules are immutable; Foreman
+Load all seven before acting. The universal rules are immutable; Foreman
 extensions are your operational playbook.
 
 Your opening prompt — `.agents/foreman/boot/foreman.md` — is what the seat was
