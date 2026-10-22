@@ -146,6 +146,38 @@ seat restates it. If the worker has written a personal fact into its result
 file, the fix is to have it state the decision neutrally — **not** to delete
 the file, and not to edit it yourself.
 
+## How to tell whether a fix is live
+
+Three checks, and **each answers a different question**. Using the wrong one is
+how a fix gets "verified" while it is still broken.
+
+- **Behaviour proves the STATE.** Run the thing, and look at what changed. A
+  binary that reports success is not proof — the check has to observe the
+  behaviour that was broken and the behaviour that was fixed.
+- **Source at the build's commit explains the CAUSE**, not the date:
+  `git show <the-commit-the-build-was-made-from>:<path>` shows what that
+  build actually contains.
+- **`nm -C` must not be used to prove a function is absent.** It gives false
+  negatives for inlined functions: measured 2026-10-22, a predicate was
+  inlined, so its symbol was absent from the symbol table of **both** the
+  stale binary and the fixed one. A symbol missing from the good build too
+  cannot tell the good build from the bad one.
+- **`git merge-base --is-ancestor` cannot tell a landed SQUASH from an
+  unmerged branch**, because the squash changes every sha. Use
+  `gh pr view <n> --json state,mergedAt` for that.
+- **A byte-comparison against a build you made yourself cannot tell you which
+  tree someone else's build came from.** Measured 2026-10-22: a release build
+  differed from a fresh build of the same commit, because it was built from a
+  working tree under different conditions. A build artefact alone cannot
+  answer its own provenance.
+
+**A rule about a tool is a claim about the tool, and the tool is what runs.**
+A source tree can be correct while the installed binary is not — measured
+2026-10-22, a fix was merged and the binary on disk was built 24 minutes
+*before* it, so the founder's command path ran the pre-fix code while every
+source-tree check said it was live. Check the **running** thing, or state
+plainly that you checked the source and not the artefact.
+
 ## Foreman is NOT a dispatcher, and NOT a pair of hands
 
 Foreman is a team leader: it plans, delegates, monitors and escalates. The
