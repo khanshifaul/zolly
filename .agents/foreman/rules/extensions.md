@@ -34,11 +34,14 @@ the manager included. Radio handles are scoped per frequency, so they stay
 plain.
 
 herdr caps an agent name at 32 characters and rejects a longer one with
-`invalid_agent_name`. `worker-<frequency>-` is 8 characters plus the frequency,
-so a 17-character frequency leaves **at most 7** for `<short-id>`; a shorter
-frequency leaves more room, but 7 is the rule that holds everywhere. Only the
-herdr agent name is abbreviated: the radio handle, queue path, branch, result
-file and worktree path keep the full task id.
+`invalid_agent_name`. The numbers are `32` for the cap, `7 + len(frequency) + 1`
+for the prefix `worker-<frequency>-`, and `32` minus that prefix for
+`<short-id>` — **7** at a 17-character frequency, which is the budget this kit
+states. Count the **rendered** name, not this template: that frequency with a
+20-character task id renders to `7 + 17 + 1 + 20 = 45` and is rejected, while a
+3-character short id renders to `25 + 3 = 28` and fits. Only the herdr agent
+name is abbreviated: the radio handle, queue path, branch, result file and
+worktree path keep the full task id.
 
 ## Worktree lifecycle
 

@@ -86,9 +86,52 @@ So:
 - The same applies to anything else a review adds: a diff, a commit message,
   a doc. The screen is the content, not the file type.
 
-The reviewer checks this before merging. If a file a review adds carries
+### Three places a copy survives — and the three checks
+
+Screening the repo is not the whole check. A copy survives in three places,
+and only one of them is reviewed before it lands:
+
+| Surface | Where it lives | Gitignored? |
+|---|---|---|
+| the tree | tracked files, and `.agents/results/` once merged | yes, by decision |
+| the notes | `.agents/inbox/` | yes — machine-local |
+| the bus | the radio ledger, `~/.local/share/herdr-radio/radio.db` | **no** — it is in no git repository at all |
+
+Run all three, as written:
+
+```bash
+grep -ril "<the founder-sensitive term>" .agents/                  # the tree
+grep -ril "<the founder-sensitive term>" .agents/inbox/            # the notes
+radio log --limit 500 | grep -ci "<the founder-sensitive term>"   # the bus
+```
+
+`radio log`, **never** `radio show <id>`: `radio show` reads one message and
+**consumes** it, so it cannot be a check — using it as an audit destroys what it
+audits. `radio log` is read-only and prints message bodies to any seat.
+
+**The term must not appear in a command either, not only in prose.** The
+deceptive copy is a verification command quoted in a message, a note or a commit
+message: the agent that quotes it did what looks like diligence, and the copy
+still outlives the tree. **The canonical form of a privacy check in any message
+or file is the placeholder, never the term itself** — the three lines above are
+written that way on purpose.
+
+**The bus is shared across offices.** The ledger holds other offices' messages,
+so a clean result on this office's frequency is not a clean bus; the check
+covers every frequency in it.
+
+**The ledger is a record and is not ours to scrub.** It holds messages that are
+not this office's, so the fix is the rule going forward — the placeholder above
+— not a deletion. Report a bus hit; do not edit the ledger.
+
+The rule is stated as a **category** — "a personal detail about the founder" —
+and never as the content behind it. A category is what a reader can apply;
+naming the content would be the leak the rule exists to stop.
+
+The reviewer checks all three before merging. If a file a review adds carries
 personal content, that is an **OBJECTION** — and the fix is to state the
-decision neutrally, not to delete the file.
+decision neutrally, not to delete the file. A hit on the bus is reported upward,
+not deleted.
 
 ### The same rule, one layer up: the brief
 

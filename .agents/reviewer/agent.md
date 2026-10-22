@@ -68,21 +68,26 @@ When prompted with a task to review, you:
    **decision** and the **paths**, never the personal content behind them. This
    file does not restate it.
 
-   The screen:
+   The screens are the three in `.agents/rules/result-contract.md` → **Three
+   places a copy survives — and the three checks**: the tree, `.agents/inbox/`,
+   and the radio ledger (`~/.local/share/herdr-radio/radio.db`, which is in no
+   git repository at all). Run all three, in the form written there. Use
+   `radio log`, never `radio show <id>` — `radio show` consumes the message it
+   reads, so it cannot be a check.
 
-   ```bash
-   git grep -n -w "<the term>" {{REMOTE}}/{{BASE_BRANCH}}
-   ```
+   Use the **whole-word, case-sensitive** form in all three. A case-insensitive
+   search matches inside unrelated words (or a base64 blob); a privacy check
+   that cries wolf is a privacy check that gets ignored. Do not scan for the
+   term together with the phrase around it either — a file that removed the term
+   legitimately quotes it while describing the removal, and a compound pattern
+   reports that clean file as dirty. And do not paste the term into a check
+   command you send over the bus or leave in a note: the canonical form of a
+   privacy check is the placeholder, never the term.
 
-   Use the **whole-word, case-sensitive** form. A case-insensitive search matches
-   inside unrelated words (or a base64 blob); a privacy check that cries wolf is
-   a privacy check that gets ignored. Do not scan for the term together with the
-   phrase around it either — a file that removed the term legitimately quotes it
-   while describing the removal, and a compound pattern reports that clean file
-   as dirty.
-
-   A hit is an **OBJECTION**. The fix is to state the decision neutrally, not to
-   delete the file.
+   A hit in the tree or the inbox is an **OBJECTION**; the fix is to state the
+   decision neutrally, not to move the copy somewhere else. A hit on the bus is
+   reported upward and not deleted — the ledger is shared across offices and is
+   not ours to scrub.
 5. If the work passes **and** a `gate: human` result carries `approved: yes` on the branch copy immediately after the gate line (or is `gate: auto`): **merge the PR** (squash-merge, delete branch)
 6. Return **exactly one line** as your verdict:
 

@@ -49,12 +49,26 @@ reviewer's herdr name is `pr-reviewer-{{FREQUENCY}}`, radio handle
 `worker-<task-id>` (scoped by the frequency already).
 
 **The agent name is capped at 32 characters, so the task id in it is
-shortened.** herdr rejects a longer name with `invalid_agent_name`.
-`worker-<frequency>-` is already 8 characters plus the frequency's length, so a
-17-character frequency leaves 7 characters for the id: `<short-id>` is **at most
-7**. A shorter frequency leaves more room, but 7 is the rule that holds at every
-frequency this kit installs at. The reviewer's name is
-`pr-reviewer-<frequency>` — 12 plus the frequency — and must not grow a suffix.
+shortened.** herdr rejects a longer name with `invalid_agent_name`. Three
+numbers matter, and all of them are counted on the **rendered** name — the
+string after the placeholders are substituted — not on this template:
+
+| Number | Value |
+|---|---|
+| the cap | `32` |
+| the prefix `worker-<frequency>-` | `7` for `worker-` + the frequency + `1` for the joining `-` |
+| the budget for `<short-id>` | `32` minus the prefix |
+
+At a 17-character frequency the prefix is `7 + 17 + 1 = 25`, so the budget is
+`32 - 25 = 7`: `<short-id>` is **at most 7 characters**. A shorter frequency
+leaves more room, but 7 is the budget this kit states. Count by running the
+string, not by adding placeholders: that frequency with a 20-character task id
+renders to `25 + 20 = 45`, which herdr rejects; the same frequency with a
+3-character short id renders to `25 + 3 = 28`, which fits.
+
+The reviewer's name is `pr-reviewer-<frequency>`: the prefix `pr-reviewer-` is
+`12`, so a 17-character frequency renders to `12 + 17 = 29` — 3 characters of
+room, and no suffix may be longer than that.
 
 **Only the herdr agent name is abbreviated.** The radio handle
 (`worker-<task-id>`), the queue path (`.agents/queue/<task-id>.md`), the branch
