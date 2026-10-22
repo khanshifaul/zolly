@@ -99,6 +99,11 @@ fi
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TEMPLATE="$SCRIPT_DIR/.agents"
 
+# Paths that are never office state and can be gigabytes: a worktree is a
+# checkout, a run is transient, and the tool's target/ is build output. Both
+# tar pipes below read this one list, so the backup and the copy cannot drift.
+TAR_EXCLUDES="--exclude=./worktrees --exclude=./runs --exclude=./zolly/tool/target"
+
 # ---------------------------------------------------------------------------
 # defaults
 # ---------------------------------------------------------------------------
@@ -467,22 +472,20 @@ else
     # office state) and runs are transient. The tool's target/ is build output
     # and can be gigabytes, so it is excluded too. Everything else is
     # recoverable.
-    ( cd "$AGENTS_DIR" && tar -cf - --exclude=./worktrees --exclude=./runs \
-        --exclude=./zolly/tool/target . ) \
+    ( cd "$AGENTS_DIR" && tar -cf - $TAR_EXCLUDES . ) \
       | ( cd "$BACKUP" && tar -xf - )
     ok "previous office saved to $BACKUP"
   fi
 
   rm -rf "$AGENTS_DIR"
   mkdir -p "$AGENTS_DIR"
-  # `cp -R` keeps the template's own directory layout. The template holds no
-  # symlinks (verified at build time), so nothing can point outside the tree.
-  cp -R "$TEMPLATE/." "$AGENTS_DIR/"
-  # Runtime state in a developer's template checkout is not part of the kit.
-  # Copying it shipped another project's worktrees (and their target/ dirs)
-  # into every new office, and a reinstall deleted the live worktrees when it
-  # replaced .agents/. The runtime dirs are recreated below.
-  rm -rf "$AGENTS_DIR/worktrees" "$AGENTS_DIR/runs"
+  # Copy with tar, not `cp -R`: `cp` has no --exclude, and a template that is
+  # a clone carries worktrees, runs and the tool's target/ (gigabytes of build
+  # output). TAR_EXCLUDES is the same list the backup above uses. The template
+  # holds no symlinks (verified at build time), so nothing points outside.
+  # shellcheck disable=SC2086 # the exclusions are deliberately word-split
+  ( cd "$TEMPLATE" && tar -cf - $TAR_EXCLUDES . ) \
+    | ( cd "$AGENTS_DIR" && tar -xf - )
   # Never ship a stale interpreter cache into a project. A local template tree
   # can have one after tests; a git archive cannot.
   find "$AGENTS_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
