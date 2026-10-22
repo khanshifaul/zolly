@@ -94,9 +94,12 @@ When prompted with a task to review, you:
    including the tree check's exclusions, without which it returns 19 hits on
    a clean office (16 compiled artefacts, 3 gitignored files in `.agents/trash/`)
    and teaches you to distrust it. Use `radio log`, never `radio show <id>` —
-   `radio show` consumes the message it reads, so it cannot be a check — and
-   read the bus count as a **floor, not a census**: the log truncates bodies,
-   so it undercounts. The exact figure, and the caveat that the placeholder
+   `radio show` is not a read, it is an **acknowledgement**: it records the
+   delivery and marks the message delivered, so an audit written against it
+   destroys the inbox state it is auditing. And read the bus count as **"this
+   many in this office", not a census**: inside a pane `radio log` selects
+   only your own frequency's traffic, so a clean log is not a clean bus —
+   the ledger is shared. The exact figure, and the caveat that the placeholder
    matches itself, are in the same file.
 
    Use the **whole-word, case-sensitive** form in all three. A case-insensitive
