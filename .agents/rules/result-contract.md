@@ -59,6 +59,56 @@ gate: human | auto
   exit is an OBJECTION; never overwrite it by hand.
 - If `## Verify` claims tests it cannot reproduce, the reviewer OBJECTIONs.
 
+## What a result file must not contain
+
+A result file is **committed to the task branch**, and on some projects the
+branch reaches a **public** repo. A result file states the **decision** and
+the **paths**. It never states the personal content behind them.
+
+Measured 2026-10-22, guzia-high-school: a result file that recorded *why* the
+office layer was untracked wrote the founder's personal health detail into
+the file. The repo is public. The file was merged through a correct review —
+one path in the diff, tests green, checks green — and published a detail the
+founder's own decision was about keeping private. The gate checked the diff
+and the tests; nothing checked the **content** of a file the review added.
+
+So:
+
+- Name the **decision** and the **paths**. "The office layer carries the
+  founder's personal notes and working preferences, so `.agents/` is not
+  published" is correct. Naming *which* personal detail is being protected is
+  what publishes it.
+- Never quote a personal detail, a health or accessibility note, a family or
+  home detail, a private contact, or a credential — even obliquely, even
+  "several files mention X".
+- If the reason for a rule cannot be stated without the personal content,
+  state the rule and the paths, and stop there.
+- The same applies to anything else a review adds: a diff, a commit message,
+  a doc. The screen is the content, not the file type.
+
+The reviewer checks this before merging. If a file a review adds carries
+personal content, that is an **OBJECTION** — and the fix is to state the
+decision neutrally, not to delete the file.
+
+### The same rule, one layer up: the brief
+
+A brief is not private. It is the instruction that produces a file that may
+be published, and a worker writes what the brief says. Measured 2026-10-22:
+the leak above did not start in the result file — it started in the brief,
+which told the worker to record the reason for a decision and worded that
+instruction to include the personal fact. The worker wrote it faithfully. A
+rule about result files would not have stopped it, because the sentence was
+authored one layer earlier.
+
+So a brief must not instruct a worker to write a personal fact into a result
+file — **not even as an example of the kind of thing to avoid**, and not even
+in a brief that says not to. When a brief needs to say why something is
+untracked, it says: name the decision, name the paths, and stop.
+
+A brief is written by a manager or a foreman, and both are bound by this rule
+before the task is dispatched. The brief's own shape is fixed in
+`.agents/rules/queue-contract.md`.
+
 ## `gate` field
 
 - `human` — the founder must review before merge (default for all workers)
