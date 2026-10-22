@@ -411,7 +411,7 @@ That runs the syntax checks, the unit tests below, and the MCP handshake.
 | Suite | Covers |
 |---|---|
 | `tests/test_hr.py` | the approval gate, dry-run, persona rendering, the `.hired` receipt |
-| `tests/test_memory.py` | secret refusal, supersession, confirm, retract, the bound check |
+| `tests/test_memory.py` | secret refusal, supersession, confirm, retract, compact, the bound check |
 | `tests/test_mcp.py` | input bounds, diagnostics redaction, project-bound agent selection |
 | `tests/test_install.py` | fresh install, repeat refusal, force-preserves memory, frequency collisions, credential discovery, webhook bind selection |
 

@@ -52,7 +52,17 @@ that line resolves.
 .agents/shared/memory read archive        # the rolled-off history
 .agents/shared/memory search "telegram"   # live + archive, with entry ids
 .agents/shared/memory check               # bound + secret scan
+.agents/shared/memory compact             # drop retracted bodies, keep ids + pointers
 ```
+
+`compact` reclaims the body of an entry whose status is `retracted`, keeping
+its header and exactly one `Promoted to:` line. The id and the promotion
+target stay, so the record still says what was believed and where its
+knowledge went. A retracted entry with **no** `Promoted to:` line is left in
+place and reported — that is a human decision. It never touches a believed
+entry, the preamble, or the archive, and it is safe to run while over budget
+because it only shrinks the live files. Name ids to compact only those
+(`memory compact L-0007`); no ids compacts every retracted entry.
 
 A second **identical** `add` is recurrence, not a new fact: it writes nothing,
 prints the existing id, and points at the promotion command. Promote it into
