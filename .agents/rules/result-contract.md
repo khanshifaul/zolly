@@ -100,14 +100,64 @@ and only one of them is reviewed before it lands:
 Run all three, as written:
 
 ```bash
-grep -ril "<the founder-sensitive term>" .agents/                  # the tree
+grep -ril "<the founder-sensitive term>" .agents/ \
+  --exclude-dir=trash --exclude-dir=node_modules --exclude-dir=target \
+  --exclude='*.rlib' --exclude='*.rmeta' --exclude='*.so'          # the tree
 grep -ril "<the founder-sensitive term>" .agents/inbox/            # the notes
 radio log --limit 500 | grep -ci "<the founder-sensitive term>"   # the bus
 ```
 
+**The tree check excludes, and the exclusions are not optional.** Without them
+the check **cries wolf**: on a clean office, measured 2026-10-22, it returned
+**19 hits — and not one of them was a real file.** Sixteen were compiled
+artefacts (`.rlib`, `.rmeta` — Rust dependencies, where the term appears as a
+coincidental byte run inside a binary), and the rest were markdown in
+`.agents/trash/`, a gitignored scratch folder. The **published** surface was
+clean the whole time: `git grep -n -w "<the founder-sensitive term>" origin/main`
+returns nothing.
+
+A privacy check that reports hits on a clean office teaches its reader to
+distrust the check, and then the check stops being run. This rule already warns
+about the case-insensitive false positive and the token-plus-phrase false
+positive; the artefact trap is the third of the family, and it is the one an
+agent hits first because it greps a directory and gets a wall of paths.
+
+**Match the check to the definition.** The table above defines the tree as
+"tracked files, and `.agents/results/` once merged". The exclusions make the
+command match that definition: what is left is files a person could read and a
+reader could see. If you want the published surface exactly, use
+`git grep -n -w "<the founder-sensitive term>" origin/main` — that one has no
+artefacts in it by construction, because git only searches tracked files.
+
 `radio log`, **never** `radio show <id>`: `radio show` reads one message and
 **consumes** it, so it cannot be a check — using it as an audit destroys what it
 audits. `radio log` is read-only and prints message bodies to any seat.
+
+**The bus check is a SCREEN, not a census, and its number is a floor.** The
+log rendering **truncates message bodies**, so the count it reports is lower
+than the number of occurrences in the ledger. Measured 2026-10-22: the log
+reported 38 where the raw table held 47 — and an hour earlier the same two
+numbers were 37 and 43, so **the gap widens as messages are added**. Read the
+number as "at least this many", never as "exactly this many". A rule that says
+"run this and you will know" is wrong by the size of the truncation, and a
+reader who trusts it will conclude the bus is clean when it is not.
+
+For the **exact** count, the ledger itself is a SQLite database:
+```bash
+sqlite3 ~/.local/share/herdr-radio/radio.db \
+  "SELECT count(*) FROM messages WHERE text LIKE '%<the founder-sensitive term>%';"
+```
+Use that when the number matters and the log's truncation would mislead.
+
+**One wrinkle to know about this command.** Written literally, the placeholder
+in the pattern matches the placeholder itself — and several messages
+legitimately contain the placeholder, because a report that correctly used
+`<the founder-sensitive term>` instead of the term IS the behaviour this rule
+asks for. Measured 2026-10-22: that query returned **4**, all of them
+correctly-written reports, and **0** real leaks. So a non-zero result here is
+usually the rule working, not the rule failing. **Read the matching message
+ids, not just the count** — `SELECT id, from_handle FROM messages WHERE …` —
+and judge each one. The screen is the screen; the census needs a human.
 
 **The term must not appear in a command either, not only in prose.** The
 deceptive copy is a verification command quoted in a message, a note or a commit

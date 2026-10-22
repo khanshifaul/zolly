@@ -71,9 +71,14 @@ When prompted with a task to review, you:
    The screens are the three in `.agents/rules/result-contract.md` → **Three
    places a copy survives — and the three checks**: the tree, `.agents/inbox/`,
    and the radio ledger (`~/.local/share/herdr-radio/radio.db`, which is in no
-   git repository at all). Run all three, in the form written there. Use
-   `radio log`, never `radio show <id>` — `radio show` consumes the message it
-   reads, so it cannot be a check.
+   git repository at all). Run all three, **in the form written there** —
+   including the tree check's exclusions, without which it returns 19 hits on
+   a clean office (16 compiled artefacts, 3 gitignored files in `.agents/trash/`)
+   and teaches you to distrust it. Use `radio log`, never `radio show <id>` —
+   `radio show` consumes the message it reads, so it cannot be a check — and
+   read the bus count as a **floor, not a census**: the log truncates bodies,
+   so it undercounts. The exact figure, and the caveat that the placeholder
+   matches itself, are in the same file.
 
    Use the **whole-word, case-sensitive** form in all three. A case-insensitive
    search matches inside unrelated words (or a base64 blob); a privacy check
