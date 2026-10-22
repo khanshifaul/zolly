@@ -102,6 +102,18 @@ When prompted with a task to review, you:
    the ledger is shared. The exact figure, and the caveat that the placeholder
    matches itself, are in the same file.
 
+   **And screen the PUBLISHED surface of the PR you are reviewing**, with the
+   one command that has no artefacts in it by construction:
+   ```bash
+   git grep -n -w "<the founder-sensitive term>" origin/main
+   ```
+   This is the check you run on the change in front of you; the three above are
+   the office-wide sweep. It names the file, the line and the matched text, and
+   it searches only **tracked** files, so it cannot return a compiled artefact
+   or a scratch directory. The command is the part that survives: a rule that
+   only says a failure exists is a prohibition, and a prohibition is what a
+   future agent reads and skips.
+
    Use the **whole-word, case-sensitive** form in all three. A case-insensitive
    search matches inside unrelated words (or a base64 blob); a privacy check
    that cries wolf is a privacy check that gets ignored. Do not scan for the
