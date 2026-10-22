@@ -48,6 +48,35 @@ gate: human | auto
 | `## Commit` | yes | commit SHA, or "not committed" |
 | `## Blockers` | yes | what stopped this, or "none" |
 
+## Cite a rule by its phrase, not by its line number
+
+When a result file records **where a rule lives** — "the load line is in
+`foreman/agent.md:14`", "the screen is at `result-contract.md:69`" — quote the
+**phrase** that identifies it, not a line number. A line number is a
+coordinate in a file that is still being edited; a phrase is a claim about
+content, and content moves without the claim becoming false.
+
+Measured 2026-10-22, guzia-high-school: a reviewer quoted seven line numbers
+for the rules in `reviewer/agent.md`, checked them, and **four were wrong** —
+they were right when quoted and wrong by the time the message was read, because
+the file had grown in between. They corrected the map, and the corrected map
+was *also* wrong, for the same reason: two were blank lines, and three landed
+on real text that was simply not the text meant. **A citation that lands on
+something plausible is worse than one that lands nowhere**, because a reader
+who checks it finds a sentence and assumes it is the one you meant.
+
+So:
+
+- **Quote the phrase.** "`Three dots for the diff, two for the log`" survives
+  every edit that adds a line above it. A line number does not.
+- **A line number is a convenience, not a citation.** Give it for the reader
+  who is opening the file right now, but always beside the phrase, so the
+  record still resolves when the file has moved.
+- **A `file:line` record of a *change* is fine** — "the diff replaced the
+  invocation at `reviewer/agent.md:64`" is a statement about a specific edit
+  at a specific moment, and the moment is what makes it checkable. It is the
+  record of where a rule **lives** that must be a phrase.
+
 ## `## Verify` section rules
 
 - List every command you ran, with its output
