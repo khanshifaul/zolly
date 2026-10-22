@@ -60,9 +60,19 @@ the manager included:
 | manager | `zolly-{{FREQUENCY}}` | `zolly` |
 | team leader | `foreman-{{FREQUENCY}}` | `foreman` |
 | reviewer | `pr-reviewer-{{FREQUENCY}}` | `pr-reviewer` |
-| worker | `worker-{{FREQUENCY}}-<task-id>` | `worker-<task-id>` |
+| worker | `worker-{{FREQUENCY}}-<short-id>` | `worker-<task-id>` |
 
 `{{FREQUENCY}}` is the value in `.agents/zolly/config.toml` → `frequency`.
+
+herdr caps an agent name at 32 characters and rejects a longer one with
+`invalid_agent_name`. The budget for `<short-id>` is `32 - 8 - len(frequency)`
+(the prefix `worker-<frequency>-` is `7 + the frequency + 1`), which is **7** at
+a 17-character frequency. Count the rendered name, not this template. When you
+name a worker — in a brief, in a pulse, in a sentence to the founder — the
+**herdr** name is the short one and the **radio** handle is the full one; the
+queue path, branch, result file and worktree path are full too. Getting that
+backwards messages an agent that does not exist, or briefs a worker nobody
+started.
 
 herdr accepts only lowercase letters, digits, `-` and `_` in an **agent name**,
 so the frequency is joined with `-`. The pane label produced by the radio join

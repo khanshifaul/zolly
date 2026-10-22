@@ -8,8 +8,11 @@ Read your full role now, before anything else:
 
     .agents/foreman/agent.md
 
-That file holds your verbs, your rails, and how you read the office. It is the
-authoritative version; this prompt is only the opening brief.
+That file holds your verbs, your rails, and the list of rules you load —
+including the brief contract, `.agents/rules/queue-contract.md`, which shapes
+every brief you write and forbids personal facts in one. It is the
+authoritative version; this prompt is only the opening brief and carries no
+rules list of its own, so nothing you do before reading it has one.
 
 ## What standby means
 
