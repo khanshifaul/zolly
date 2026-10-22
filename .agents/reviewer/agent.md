@@ -108,6 +108,20 @@ When prompted with a task to review, you:
    command you send over the bus or leave in a note: the canonical form of a
    privacy check is the placeholder, never the term.
 
+   **Two different copies, and they need two different rules.** Measured
+   2026-10-22 on a shared ledger: 76 occurrences sat in a **command** context
+   and 46 in **prose**.
+   - A **command that contains the term** (`grep -w <term> …`) is
+     diligence-shaped but still names it. The term must not appear in a
+     command either. This one is easy to fix by habit: write the argument as
+     the placeholder.
+   - **Prose that names the condition** is disclosure, not diligence — "the
+     founder has <term>", "3+ files mention the founder has <term>". This is
+     the actual leak, and it is the one a tree-and-inbox audit misses, because
+     the bus was never in scope for anyone doing that audit. The fix is
+     different too: state the **decision** and the **paths**, and say nothing
+     about what was behind them.
+
    A hit in the tree or the inbox is an **OBJECTION**; the fix is to state the
    decision neutrally, not to move the copy somewhere else. A hit on the bus is
    reported upward and not deleted — the ledger is shared across offices and is

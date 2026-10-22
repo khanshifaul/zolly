@@ -142,25 +142,40 @@ reader could see. If you want the published surface exactly, use
 `git grep -n -w "<the founder-sensitive term>" origin/main` — that one has no
 artefacts in it by construction, because git only searches tracked files.
 
-`radio log`, **never** `radio show <id>`: `radio show` reads one message and
-**consumes** it, so it cannot be a check — using it as an audit destroys what it
-audits. `radio log` is read-only and prints message bodies to any seat.
+`radio log`, **never** `radio show <id>`. `radio show` is not a read — it is an
+**acknowledgement**. The bus's own source says so: reading a message as its
+addressed recipient "records the delivery — that is the pull path's
+acknowledgement", and it ends with `UPDATE deliveries SET status='delivered'`.
+So an audit written against `radio show` does not merely consume what it
+checks — it **silently marks the inbox delivered**, so the audit destroys the
+inbox state it is auditing, and the next reader sees the messages as already
+read. A check that consumes the thing it checks is not a check. `radio log` is
+read-only and prints message bodies to any seat.
 
-**The bus check is a SCREEN, not a census, and its number is a floor.** The
-log rendering **truncates message bodies**, so the count it reports is lower
-than the number of occurrences in the ledger. Measured 2026-10-22: the log
-reported 38 where the raw table held 47 — and an hour earlier the same two
-numbers were 37 and 43, so **the gap widens as messages are added**. Read the
-number as "at least this many", never as "exactly this many". A rule that says
-"run this and you will know" is wrong by the size of the truncation, and a
-reader who trusts it will conclude the bus is clean when it is not.
+**The bus check is a SCREEN over YOUR office's traffic, not a census of the
+ledger — and the difference is SCOPE, not rendering.** `radio log` prints each
+message body in full (it renders `row["text"]` verbatim), so it does not
+truncate and clip a term out of a long line. What it does is **select**:
+inside a pane it selects `WHERE from_ws = ? OR to_ws = ?` with the current
+scope, so it shows **only your own frequency's traffic**. Outside herdr it
+shows the whole ledger. Measured 2026-10-22 on a shared ledger: the raw table
+held 58 messages carrying the term across two offices, and the in-pane log
+showed 40 — the other office's 18 were not in scope, and the log gave no
+indication of that.
 
-For the **exact** count, the ledger itself is a SQLite database:
+So read the number as **"this many in this office"**, never as "this many
+in the ledger" — and never as "the ledger is clean". The ledger is **shared
+across offices**, so a clean log is not a clean bus. A rule that names the
+log as THE check lets a dirty ledger pass because the dirty messages belong
+to somebody else.
+
+For the **exact** count across the whole ledger, the ledger itself is a SQLite
+database:
 ```bash
 sqlite3 ~/.local/share/herdr-radio/radio.db \
   "SELECT count(*) FROM messages WHERE text LIKE '%<the founder-sensitive term>%';"
 ```
-Use that when the number matters and the log's truncation would mislead.
+Use that when the number matters and the log's scope would mislead.
 
 **One wrinkle to know about this command.** Written literally, the placeholder
 in the pattern matches the placeholder itself — and several messages
