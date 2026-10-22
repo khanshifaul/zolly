@@ -555,19 +555,24 @@ else
     # memory/entity_store.json because none of them was named. Restore any
     # file or symlink that exists in the backup and not in the fresh tree,
     # while skipping runtime state and build output.
-    restored_missing=0
-    while IFS= read -r -d '' f; do
-      rel=${f#"$BACKUP"/}
-      case "$rel" in
-        worktrees/*|runs/*|memory/.work/*|memory/.lock|memory/*.tmp|zolly/tool/target/*) continue ;;
-        AGENTS.md|nudge.stamp|LAST_PROMPT.md|STATE.md|day.json|*.pid) continue ;;
-      esac
-      [ -e "$AGENTS_DIR/$rel" ] && continue
-      mkdir -p "$AGENTS_DIR/$(dirname "$rel")"
-      cp -a "$f" "$AGENTS_DIR/$rel"
-      restored_missing=1
-    done < <(find "$BACKUP" \( -type f -o -type l \) -print0)
-    [ "$restored_missing" -eq 0 ] || ok "restored office-local files the template does not ship"
+    restore_marker="$AGENTS_DIR/.restore-missing"
+    : > "$restore_marker"
+    find "$BACKUP" \( -type f -o -type l \) -print0 |
+      while IFS= read -r -d '' f; do
+        rel=${f#"$BACKUP"/}
+        case "$rel" in
+          worktrees/*|runs/*|memory/.work/*|memory/.lock|memory/*.tmp|zolly/tool/target/*) continue ;;
+          AGENTS.md|nudge.stamp|LAST_PROMPT.md|STATE.md|day.json|*.pid) continue ;;
+        esac
+        [ -e "$AGENTS_DIR/$rel" ] && continue
+        mkdir -p "$AGENTS_DIR/$(dirname "$rel")"
+        cp -a "$f" "$AGENTS_DIR/$rel" || exit 1
+        printf '%s\n' "$rel" >> "$restore_marker"
+      done
+    if [ -s "$restore_marker" ]; then
+      ok "restored office-local files the template does not ship"
+    fi
+    rm -f "$restore_marker"
   fi
 fi
 
