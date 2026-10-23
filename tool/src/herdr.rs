@@ -522,6 +522,22 @@ fn normalize_task_id(task_id: &str) -> String {
     task_id.to_lowercase().replacen('-', "/", 1)
 }
 
+/// `herdr agent wait` arguments for "the turn is over".
+///
+/// Extracted so the states this office treats as settled are unit-testable:
+/// the shipped defect was this exact list, `--until idle` only. `idle` covers
+/// an agent that has not run a turn yet; `done` is what an omp seat reports
+/// once it has (measured 2026-10-23). `blocked` is not settled.
+fn agent_wait_args(name: &str, timeout_ms: u64) -> Vec<String> {
+    [
+        "agent", "wait", name, "--until", "idle", "--until", "done", "--timeout",
+        &timeout_ms.to_string(),
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 pub struct HerdrClient {
     /// The office this client speaks for. Seats started by `init` run here, so
     /// this is where omp writes their session JSONL — the file
@@ -627,24 +643,23 @@ impl HerdrClient {
         Ok(())
     }
 
-    /// Block until the named agent reaches `idle`, or the deadline. Used
-    /// between `agent_start` and the first prompt: the agent's TUI is not
-    /// ready to read stdin the instant the process spawns, and a prompt sent
-    /// that early is buffered but never submitted — the text sits in the
-    /// input line with the shell prompt under it. Verified empirically
-    /// against this herdr: `agent prompt` without `--wait` does press Enter,
-    /// so the failure is timing, not a missing submit verb.
+    /// Block until the named agent reaches a resting state, or the deadline.
+    /// Used by the settle loop of `agent_prompt_with_reply`: wait for the
+    /// turn to end, then let the screen confirm it.
+    ///
+    /// `idle` alone is not a resting state for this office's agent kind. An
+    /// omp seat that has finished at least one turn reports `done`
+    /// (`herdr agent get pr-reviewer-guzia-high-school` → `agent_status:
+    /// "done"`, measured 2026-10-23 20:2x +06), and `herdr agent wait …
+    /// --until idle` times out on it — three live instances, each after the
+    /// work had already merged (`zolly reviewer office-critic-personas`,
+    /// `office-kit-substitution-scope` at 900 s). `herdr agent wait` accepts
+    /// repeatable `--until`; both resting states must be named. `blocked` is
+    /// deliberately *not* included: an agent waiting for input has not
+    /// finished, and herdr's no-`--until` default would match it.
     pub fn agent_wait(&self, name: &str, timeout_ms: u64) -> Result<()> {
         let output = Command::new("herdr")
-            .args([
-                "agent",
-                "wait",
-                name,
-                "--until",
-                "idle",
-                "--timeout",
-                &timeout_ms.to_string(),
-            ])
+            .args(agent_wait_args(name, timeout_ms))
             .output()
             .context("Failed to run herdr agent wait")?;
 
@@ -1529,6 +1544,23 @@ mod tests {
     fn clean_reply_keeps_plain_text() {
         let raw = "Shifaul, the competitor sweep found 43 prospects across 12 districts.";
         assert_eq!(clean_reply(raw), raw);
+    }
+
+    #[test]
+    fn wait_accepts_both_resting_states() {
+        // The settle loop must stop for an omp seat that reports `done`.
+        // `--until idle` alone timed out at 900 s after the work had merged;
+        // `blocked` must stay out — an agent waiting for input is not done.
+        let args = agent_wait_args("pr-reviewer-guzia-high-school", 900_000);
+        let untils: Vec<&str> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i > 0 && args[i - 1] == "--until")
+            .map(|(_, a)| a.as_str())
+            .collect();
+        assert_eq!(untils, ["idle", "done"]);
+        assert_eq!(args[2], "pr-reviewer-guzia-high-school");
+        assert_eq!(args.last().map(String::as_str), Some("900000"));
     }
 
     #[test]

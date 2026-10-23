@@ -556,6 +556,95 @@ fn radio_join(handle: &str, pane: &str, role: &str, frequency: &str) {
     println!("radio: {handle} — {line}");
 }
 
+/// Message ids from `radio inbox` output: one `  #<id> …` line per row, the
+/// header and the `read one:` footer carry none.
+fn inbox_ids(stdout: &str) -> Vec<u64> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix('#')?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .collect()
+}
+
+/// Acknowledge every envelope queued for `handle` before its seat boots.
+///
+/// The replay this prevents, measured 2026-10-23 13:23Z: the relay parks
+/// deliveries sent while a seat has no live pane as `pull` + "no live pane".
+/// `radio join`'s own catch-up only demotes rows still `pending`, so parked
+/// rows survive it; the next relay tick sees the new pane, re-promotes all of
+/// them (`relay.log`: 29 `pane back, re-queued for push` lines in one tick),
+/// and pushes the backlog into the fresh agent as user turns. A seat that has
+/// just started has no context to answer yesterday's mail with — its first
+/// turn must be its boot prompt, and a stale answer is worse than none (#493
+/// calls PR #26 blocked while #497 reports it merged, both after the merge).
+///
+/// Reading each queued envelope as the handle is the plugin's own
+/// acknowledgement path (`radio show --by` marks the delivery `delivered`),
+/// so the relay has nothing left to push. It runs before the tab exists,
+/// which also closes the window in which the relay could type into a bare
+/// shell. Every failure is reported in one line and swallowed: the seat must
+/// come up whether or not the bus does.
+fn radio_drain(office: &Office, handle: &str) {
+    let scope = office.workspace();
+    let read = |args: &[&str]| {
+        std::process::Command::new("radio")
+            .args(args)
+            .env("HERDR_ENV", "1")
+            .env("HERDR_WORKSPACE_ID", &scope)
+            .env("RADIO_HANDLE", handle)
+            // With no pane, radio resolves this handle through RADIO_HANDLE
+            // in the frequency scope. An inherited pane would make the
+            // caller's own membership authoritative and refuse another
+            // handle.
+            .env_remove("HERDR_PANE_ID")
+            .output()
+    };
+    let mut drained = 0usize;
+    let mut unreachable = None;
+    for status in ["pending", "pull", "failed"] {
+        // A listing may be capped; every acknowledged row leaves the status,
+        // so round until the list is empty or stops making progress.
+        for _ in 0..10 {
+            let ids = match read(&["inbox", "--status", status, "--limit", "1000"]) {
+                Ok(out) if out.status.success() => {
+                    inbox_ids(&String::from_utf8_lossy(&out.stdout))
+                }
+                Ok(_) => break,
+                Err(e) => {
+                    unreachable = Some(e.to_string());
+                    break;
+                }
+            };
+            if ids.is_empty() {
+                break;
+            }
+            let mut acked = 0;
+            for id in ids {
+                let id = id.to_string();
+                if let Ok(out) = read(&["show", &id, "--by", handle]) {
+                    if out.status.success() {
+                        acked += 1;
+                    }
+                }
+            }
+            drained += acked;
+            if acked == 0 {
+                break;
+            }
+        }
+    }
+    match unreachable {
+        Some(e) => println!("radio: {handle} — drain unavailable ({e})"),
+        None => println!("radio: {handle} — drained {drained} queued envelope(s)"),
+    }
+}
+
 fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     let office = Office::load(root.to_path_buf());
     let foreman = office.agent("foreman");
@@ -652,10 +741,6 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// One seat, one linear path: label the tab, join the bus while the pane is a
-/// shell, then start the agent with its boot prompt and persona as launch
-/// arguments. Passing them at launch (measured 3.0s per seat) beats starting
-/// omp empty and then prompting it (the turn-start wait cost ~6s more).
 /// Rename an already-running omp in the seat's tab to the expected agent name.
 /// True only when the rename succeeded.
 fn adopt_seat(herdr: &herdr::HerdrClient, office: &Office, handle: &str, label: &str) -> bool {
@@ -679,6 +764,13 @@ fn adopt_seat(herdr: &herdr::HerdrClient, office: &Office, handle: &str, label: 
         .is_ok()
 }
 
+/// One seat, one linear path: empty the mailbox, label the tab, join the bus
+/// while the pane is a shell, then start the agent with its boot prompt and
+/// persona as launch arguments. Draining comes first, before the tab exists,
+/// so the relay cannot re-promote yesterday's parked mail against the new
+/// pane (see `radio_drain`). Passing the prompt at launch (measured 3.0s per
+/// seat) beats starting omp empty and then prompting it (the turn-start wait
+/// cost ~6s more).
 fn open_seat(
     herdr: &herdr::HerdrClient,
     office: &Office,
@@ -702,6 +794,7 @@ fn open_seat(
     }
     launch.push(format!("@{}", persona_path.display()));
 
+    radio_drain(office, handle);
     let pane = herdr
         .agent_start_with_retry(
             name,
@@ -2814,6 +2907,25 @@ mod radio_tests {
     fn a_silent_exit_reports_no_output() {
         assert_eq!(radio_line(false, "  \n", ""), "no output");
         assert_eq!(radio_line(true, "", ""), "no output");
+    }
+
+    #[test]
+    fn inbox_ids_read_the_rows_and_ignore_the_chrome() {
+        // Shape measured from `radio inbox --status pull` (2026-10-23). The
+        // drain acks exactly these ids; if the header/footer ever parsed as
+        // ids they would be shown and refused, and if rows stopped parsing the
+        // mailbox would silently stay queued — the replay returns.
+        let stdout = "inbox for pr-reviewer (newest 2):\n  \
+#370 10-22 12:10 foreman        pull       3894c ref  [reply] task=office-…\n  \
+#445 10-22 16:28 zolly          pending    512c  [your ga…\nread one: radio show <id>\n";
+        assert_eq!(inbox_ids(stdout), vec![370, 445]);
+    }
+
+    #[test]
+    fn inbox_ids_is_empty_when_nothing_is_queued() {
+        let stdout = "inbox empty for pr-reviewer\n\
+(new messages are pushed to your pane automatically — do not poll this command waiting for a reply)\n";
+        assert!(inbox_ids(stdout).is_empty());
     }
 }
 
