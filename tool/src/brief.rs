@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Serialize, Deserialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -169,11 +170,16 @@ fn merged_into_integration(root: &Path, refname: &str, result_name: &str) -> boo
 
 /// Split the gates in `.agents/results/` into `(waiting, historical)`.
 ///
-/// Reads the result files from disk at `dir`. When called from
-/// `generate_brief`, `dir` is the branch's own `.agents/results/` in the
-/// worktree checkout — so this reads the **branch copy**, never the main
-/// checkout's copy. An `approved: yes` that exists only in the main checkout
-/// is invisible here and never counts.
+/// One canonical file per task, read in this order: the worktree copy, the
+/// main checkout's copy, then the copy on the task's `foreman/*` branch. The
+/// first two come from `queue::result_files`; the third is read out of git
+/// when neither checkout has the file — a worktree that is gone or was never
+/// created here otherwise hides the gate completely (issue #19). An
+/// `approved: yes` in a copy that is not canonical is invisible and never
+/// counts.
+///
+/// Queue files are deliberately not read: a queued gate names a decision the
+/// task will reach, not one waiting on the founder now.
 ///
 /// Historical means: the gate is present and unapproved, its value is a bare
 /// provider, and the task's result file is already on the integration ref —
@@ -184,32 +190,122 @@ pub(crate) fn result_gates(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
     let mut waiting = Vec::new();
     let mut historical = Vec::new();
     let refname = integration_ref(root);
+    let mut covered = HashSet::new();
     for path in crate::queue::result_files(root) {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let fm = crate::queue::parse_frontmatter(&content);
-        if !fm.gate_human {
-            continue;
-        }
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        if fm.approved {
-            historical.push(name);
-            continue;
-        }
-        let merged = refname
-            .map(|r| merged_into_integration(root, r, &name))
-            .unwrap_or(false);
-        if crate::queue::is_waiting_gate(&content, merged) {
-            waiting.push(name);
-        } else {
-            historical.push(name);
-        }
+        covered.insert(name.clone());
+        classify_gate(root, refname, name, &content, &mut waiting, &mut historical);
+    }
+    for (name, content) in branch_results(root, &covered) {
+        classify_gate(root, refname, name, &content, &mut waiting, &mut historical);
     }
     Ok((waiting, historical))
+}
+
+/// Sort one result file into `waiting` or `historical`. Gate value and merge
+/// state decide; see `result_gates`.
+fn classify_gate(
+    root: &Path,
+    refname: Option<&'static str>,
+    name: String,
+    content: &str,
+    waiting: &mut Vec<String>,
+    historical: &mut Vec<String>,
+) {
+    let fm = crate::queue::parse_frontmatter(content);
+    if !fm.gate_human {
+        return;
+    }
+    if fm.approved {
+        historical.push(name);
+        return;
+    }
+    let merged = refname
+        .map(|r| merged_into_integration(root, r, &name))
+        .unwrap_or(false);
+    if crate::queue::is_waiting_gate(content, merged) {
+        waiting.push(name);
+    } else {
+        historical.push(name);
+    }
+}
+
+/// Result files that exist only on a local `foreman/*` branch, as
+/// `(file name, content)`. Names in `covered` are canonical somewhere closer
+/// and are skipped, so the worktree and main-checkout copies always win.
+/// Branches are ordered newest-first: when two carry the same result, the
+/// newer one is the live attempt.
+fn branch_results(root: &Path, covered: &HashSet<String>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut seen = covered.clone();
+    let Ok(refs) = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/heads/foreman/",
+        ])
+        .current_dir(root)
+        .output()
+    else {
+        return out;
+    };
+    if !refs.status.success() {
+        return out;
+    }
+    for branch in String::from_utf8_lossy(&refs.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+    {
+        let Ok(tree) = Command::new("git")
+            .args([
+                "ls-tree",
+                "-r",
+                "--name-only",
+                branch,
+                "--",
+                ".agents/results",
+            ])
+            .current_dir(root)
+            .output()
+        else {
+            continue;
+        };
+        if !tree.status.success() {
+            continue;
+        }
+        for path in String::from_utf8_lossy(&tree.stdout).lines().map(str::trim) {
+            let Some(name) = path.rsplit('/').next() else {
+                continue;
+            };
+            if !name.ends_with(".md") || seen.contains(name) {
+                continue;
+            }
+            let Ok(show) = Command::new("git")
+                .args(["show", &format!("{branch}:{path}")])
+                .current_dir(root)
+                .output()
+            else {
+                continue;
+            };
+            if !show.status.success() {
+                continue;
+            }
+            seen.insert(name.to_string());
+            out.push((
+                name.to_string(),
+                String::from_utf8_lossy(&show.stdout).into_owned(),
+            ));
+        }
+    }
+    out
 }
 
 pub fn generate_brief(root: &Path) -> Result<Brief> {
@@ -768,6 +864,108 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+    #[test]
+    fn gate_on_a_result_that_exists_only_on_a_branch_is_waiting() {
+        // Issue #19: the worktree is gone and the main checkout never had the
+        // result. The gate lives on `foreman/t-branch-only`; before the
+        // branch pass the brief reported `gates: []` and "nothing, I have it".
+        let root = gated_repo("branch-only", &[], &[]);
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["checkout", "-q", "-b", "foreman/t-branch-only"])
+            .status
+            .success());
+        std::fs::write(
+            root.join(".agents/results/t-branch-only.md"),
+            "---\nid: t-branch-only\nstatus: complete\ngate: human\n---\nBody",
+        )
+        .unwrap();
+        assert!(git(&["add", "-A"]).status.success());
+        assert!(git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "result",
+        ])
+        .status
+        .success());
+        assert!(git(&["checkout", "-q", "main"]).status.success());
+        assert!(!root.join(".agents/results/t-branch-only.md").exists());
+
+        let b = generate_brief(&root).unwrap();
+        assert_eq!(
+            b.gates,
+            vec!["t-branch-only.md".to_string()],
+            "a gate carried only by a task branch must reach the brief"
+        );
+        assert_eq!(b.next_action, "resolve the waiting gates");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn branch_scan_yields_to_the_checkout_copy() {
+        // The same task on the branch and in the main checkout. The checkout
+        // is canonical, so its approval wins and the branch's bare gate does
+        // not come back as waiting.
+        let root = gated_repo(
+            "branch-dedup",
+            &[(
+                "t-dup.md",
+                "---\nid: t-dup\ngate: human\napproved: yes\n---\nMain copy",
+            )],
+            &[],
+        );
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["checkout", "-q", "-b", "foreman/t-dup"]).status.success());
+        std::fs::write(
+            root.join(".agents/results/t-dup.md"),
+            "---\nid: t-dup\ngate: human\n---\nBranch copy",
+        )
+        .unwrap();
+        assert!(git(&["add", "-A"]).status.success());
+        assert!(git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "branch copy",
+        ])
+        .status
+        .success());
+        assert!(git(&["checkout", "-q", "main"]).status.success());
+
+        let (mut waiting, mut historical) = result_gates(&root).unwrap();
+        waiting.sort();
+        historical.sort();
+        assert!(
+            waiting.is_empty(),
+            "the checkout copy is canonical: {:?}",
+            waiting
+        );
+        assert_eq!(historical, vec!["t-dup.md".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn generate_brief_on_empty_root_does_not_panic() {
         let dir = std::env::temp_dir().join(format!(
