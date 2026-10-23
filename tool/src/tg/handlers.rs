@@ -134,7 +134,7 @@ fn mark_approved(content: &str) -> String {
     out
 }
 
-/// `haa` / `ha` / `yes` writes `approved: yes` into every unsettled
+/// `approve` / `yes` writes `approved: yes` into every unsettled
 /// `gate: human` result. The branch copy is canonical, so the write is
 /// committed on the task branch; it never dispatches, pushes, or merges.
 pub fn handle_approve(root: &Path) -> Result<String> {
@@ -162,7 +162,7 @@ pub fn handle_approve(root: &Path) -> Result<String> {
     }
 }
 
-/// `na` / `no` writes `status: escalated` plus a `reject:` reason into the
+/// `decline` / `no` writes `status: escalated` plus a `reject:` reason into the
 /// canonical result and commits it on the task branch. It never dispatches,
 /// pushes, or merges.
 pub fn handle_decline(root: &Path) -> Result<String> {
@@ -310,7 +310,7 @@ pub fn handle_gates(root: &Path) -> Result<String> {
         for g in &b.gates {
             waiting.push_str(&format!("  - {}\n", g));
         }
-        waiting.push_str("\nReply `haa` to approve all pending gates, `na` to decline.");
+        waiting.push_str("\nReply `approve` to approve all pending gates, `decline` to decline.");
         waiting
     };
     if !b.historical_gates.is_empty() {

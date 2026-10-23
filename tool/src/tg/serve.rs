@@ -357,8 +357,8 @@ pub(super) async fn handle_update(
         let response = match keyword.as_str() {
             "status" => handlers::handle_status(root),
             "pulse" => handlers::handle_pulse(root),
-            "approve" | "ha" | "haa" | "yes" => handlers::handle_approve(root),
-            "decline" | "na" | "no" => handlers::handle_decline(root),
+            "approve" | "yes" => handlers::handle_approve(root),
+            "decline" | "no" => handlers::handle_decline(root),
             "gates" => handlers::handle_gates(root),
             "stalls" => handlers::handle_stalls(root),
             "collab" => {
@@ -605,13 +605,13 @@ where
 
 /// Every command registered in Telegram's slash menu, one row per synonym
 /// family. Must stay in sync with the keywords `handle_update` accepts
-/// (status, pulse, approve|ha|haa|yes, decline|na|no, gates, stalls, collab,
+/// (status, pulse, approve|yes, decline|no, gates, stalls, collab,
 /// help, plus the ask-words brief and liveness). `what's up` is an ask-word
 static REGISTERED_COMMANDS: &[(&str, &str)] = &[
     ("status", "Show current status (brief)"),
     ("pulse", "Liveness pulse (who is running, what is stuck)"),
-    ("approve", "Approve a gate (ha, haa, yes also work)"),
-    ("decline", "Decline a gate (na, no also work)"),
+    ("approve", "Approve a gate (yes also works)"),
+    ("decline", "Decline a gate (no also works)"),
     ("gates", "Show open gates and their owners"),
     ("stalls", "Show stalled workers and panes"),
     ("collab", "Find/start OMP collab session, send control link"),
@@ -660,11 +660,8 @@ fn is_router_keyword(word: &str) -> bool {
         "status"
             | "pulse"
             | "approve"
-            | "ha"
-            | "haa"
             | "yes"
             | "decline"
-            | "na"
             | "no"
             | "gates"
             | "stalls"
