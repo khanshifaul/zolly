@@ -502,6 +502,36 @@ pub async fn cmd_report(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The office's Collab host, if one is running.
+///
+/// `omp collab list` is machine-wide: every local OMP session registers, so
+/// the first entry may belong to another project on the same machine. Take the
+/// host whose cwd is the office root; a host inside the office (a worktree or
+/// a nested session) is the fallback, matching `workspace_for_path`.
+fn collab_host_for_office(json: &serde_json::Value, root: &Path) -> Option<String> {
+    let hosts = json.get("hosts")?.as_array()?;
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut nested = None;
+    for host in hosts {
+        let Some(cwd) = host.get("cwd").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let cwd = Path::new(cwd);
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let instance = host
+            .get("instanceId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if cwd == root {
+            return instance;
+        }
+        if nested.is_none() && cwd.starts_with(&root) {
+            nested = instance;
+        }
+    }
+    nested
+}
+
 /// Find or start an OMP collab session and send the URL to Telegram.
 /// Control link by default (the founder can drive the session from
 /// chat); pass `view = true` for a view-only link.
@@ -515,27 +545,19 @@ pub async fn cmd_collab(
     let token = get_token()?;
     let target_chat = super::send::resolve_chat(chat_id)?;
 
-    // Check for existing sessions
+    // Check for existing sessions. The listing is machine-wide, so it is
+    // filtered to this office before a host is chosen.
     let list_output = tokio::process::Command::new("omp")
         .args(["collab", "list", "--json"])
+        .current_dir(root)
         .output()
         .await
         .context("Failed to run omp collab list")?;
 
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-    let instance_id = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&list_stdout) {
-        if let Some(hosts) = json.get("hosts").and_then(|v| v.as_array()) {
-            if let Some(first) = hosts.first() {
-                first.get("instanceId").and_then(|v| v.as_str()).map(|s| s.to_string())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let instance_id = serde_json::from_str::<serde_json::Value>(&list_stdout)
+        .ok()
+        .and_then(|json| collab_host_for_office(&json, root));
 
     let instance_id = match instance_id {
         Some(id) => id,
@@ -553,30 +575,24 @@ pub async fn cmd_collab(
             // Re-list to get the new session's instanceId
             let list_output = tokio::process::Command::new("omp")
                 .args(["collab", "list", "--json"])
+                .current_dir(root)
                 .output()
                 .await
                 .context("Failed to run omp collab list after /collab")?;
 
             let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&list_stdout) {
-                if let Some(hosts) = json.get("hosts").and_then(|v| v.as_array()) {
-                    if let Some(first) = hosts.first() {
-                        first.get("instanceId").and_then(|v| v.as_str()).map(|s| s.to_string())
-                            .ok_or_else(|| anyhow::anyhow!("Sent /collab but no collab session found"))?
-                    } else {
-                        anyhow::bail!("Sent /collab but no collab session found");
-                    }
-                } else {
-                    anyhow::bail!("Sent /collab but no hosts in collab list");
-                }
-            } else {
-                anyhow::bail!("Failed to parse collab list after /collab");
+            match serde_json::from_str::<serde_json::Value>(&list_stdout) {
+                Ok(json) => collab_host_for_office(&json, root).ok_or_else(|| {
+                    anyhow::anyhow!("Sent /collab but no collab session found for this office")
+                })?,
+                Err(_) => anyhow::bail!("Failed to parse collab list after /collab"),
             }
         }
     };
 
     // Control link by default; --view asks for read-only access.
     let mut cmd = tokio::process::Command::new("omp");
+    cmd.current_dir(root);
     let args: Vec<String> = if _view {
         vec!["collab".to_string(), "link".to_string(), instance_id.clone(), "--view".to_string()]
     } else {
@@ -785,5 +801,55 @@ mod tests {
             marked.lines().any(|l| l.trim() == "approved: yes"),
             "the marker must be a line of its own: {marked}"
         );
+    }
+
+    /// `omp collab list` is machine-wide. The office must pick its own host,
+    /// not whichever project registered first.
+    #[test]
+    fn collab_host_is_scoped_to_the_office() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!(
+            "zolly-collab-{}-{nanos}",
+            std::process::id()
+        ));
+        let office = base.join("office");
+        let other = base.join("other");
+        let nested = office.join(".agents/worktrees/t-x");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&other).unwrap();
+
+        let list = |entries: &[(&str, &Path)]| {
+            serde_json::json!({
+                "version": 1,
+                "hosts": entries
+                    .iter()
+                    .map(|(id, cwd)| serde_json::json!({
+                        "instanceId": id,
+                        "cwd": cwd.to_string_lossy(),
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        };
+
+        // Another project registered first; the office's host is second.
+        let json = list(&[("other", &other), ("office", &office)]);
+        assert_eq!(
+            collab_host_for_office(&json, &office).as_deref(),
+            Some("office")
+        );
+
+        // No exact host: a session nested inside the office still counts.
+        let json = list(&[("other", &other), ("nested", &nested)]);
+        assert_eq!(
+            collab_host_for_office(&json, &office).as_deref(),
+            Some("nested")
+        );
+
+        // Nothing in the office: no host, rather than the first machine-wide one.
+        let json = list(&[("other", &other)]);
+        assert_eq!(collab_host_for_office(&json, &office), None);
     }
 }
