@@ -1167,6 +1167,25 @@ impl StepOutcome {
     }
 }
 
+/// Agent names a worker seat for `task_id` may carry.
+///
+/// The foreman names the seat `worker-<frequency>-<short-id>`, shortening the
+/// task id only when the rendered name would break herdr's 32-character cap.
+/// `worker-<task-id>` is the older form. `close_agent_tabs` skips a name no
+/// agent carries, so passing both is safe and keeps `close` idempotent.
+fn worker_seat_names(root: &std::path::Path, task_id: &str) -> Vec<String> {
+    let frequency = crate::office::Office::load(root.to_path_buf()).frequency;
+    let prefix = format!("worker-{frequency}-");
+    let budget = 32usize.saturating_sub(prefix.chars().count());
+    let short_id: String = task_id.chars().take(budget).collect();
+    let mut names = vec![format!("{prefix}{short_id}")];
+    let plain = format!("worker-{task_id}");
+    if !names.contains(&plain) {
+        names.push(plain);
+    }
+    names
+}
+
 /// `zolly close <task-id>` — the post-merge sweep. Idempotent, six steps, one
 /// printed line each plus a summary. It never fails on a worktree that is
 /// already gone: the self-repair path has none, and that is not an error.
@@ -1197,7 +1216,9 @@ fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> R
     println!("2/6 branch    : {}", branch_step.line);
 
     // 3/6 — the worktree, if it is still there. Absent is a skip, not a failure.
-    let worktree = match herdr.worktree_close(&repo, task_id) {
+    // The seat dies with it: a live pane whose cwd was just deleted is a zombie
+    // that `herdr agent list` keeps counting (#12).
+    let mut worktree = match herdr.worktree_close(&repo, task_id) {
         Ok(Some(path)) => {
             let mut step = StepOutcome::new(format!("removed {path}"), "removed", false);
             if deferred {
@@ -1226,6 +1247,17 @@ fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> R
         ),
         Err(e) => StepOutcome::new(format!("FAILED to remove the worktree: {e}"), "FAILED", true),
     };
+    // The worktree is gone; close the seat that was created for it. A failure
+    // is reported but does not fail the sweep: herdr being unreachable must not
+    // make `close` refuse to finish the rest (the worktree step already treats
+    // it that way), and the line names the reason either way.
+    let seats = worker_seat_names(root, task_id);
+    let seat_refs: Vec<&str> = seats.iter().map(String::as_str).collect();
+    match herdr.close_agent_tabs(&seat_refs) {
+        Ok(closed) if closed.is_empty() => {}
+        Ok(closed) => worktree.line.push_str(&format!("; seat closed: {}", closed.join(", "))),
+        Err(e) => worktree.line.push_str(&format!("; seat not closed: {e}")),
+    }
     println!("3/6 worktree  : {}", worktree.line);
 
     // 4/6 — the done-signal must be in git. A task without its result file in
@@ -2938,6 +2970,45 @@ mod verify_copy_tests {
         )
         .unwrap();
         assert!(branch.contains("- command: `echo FROM_MAIN`"), "{branch}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod seat_tests {
+    use super::*;
+
+    /// The foreman names a worker `worker-<frequency>-<short-id>` and shortens
+    /// the task id to fit herdr's 32-character cap. `close` must derive the
+    /// same name, or it closes nothing.
+    #[test]
+    fn worker_seat_names_match_the_foreman_and_the_cap() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "zolly-seat-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join(".agents/zolly")).unwrap();
+        std::fs::write(
+            root.join(".agents/zolly/config.toml"),
+            "frequency = \"freq\"\n",
+        )
+        .unwrap();
+
+        // A task id that already fits: the full id is the agent name.
+        let names = worker_seat_names(&root, "t-project-truths");
+        assert_eq!(names[0], "worker-freq-t-project-truths");
+        assert!(names.contains(&"worker-t-project-truths".to_string()));
+
+        // A long task id: the prefix is intact and the rendered name hits the cap.
+        let names = worker_seat_names(&root, "t-a-twenty-character-task-id");
+        assert_eq!(names[0], "worker-freq-t-a-twenty-character");
+        assert_eq!(names[0].chars().count(), 32);
+        assert!(names.contains(&"worker-t-a-twenty-character-task-id".to_string()));
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

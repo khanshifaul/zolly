@@ -806,13 +806,13 @@ impl HerdrClient {
             })
     }
 
-    /// Close the tabs hosting any live agents named in `names`. Used by
-    /// `init --force` to recover from a zombie agent entry — a name herdr
-    /// still lists but whose pane is gone or unresponsive. Without --force,
-    /// init treats the name as alive and skips it.
-    #[allow(dead_code)] // reserved for init --force recovery path
-    pub fn close_agent_tabs(&self, names: &[&str]) -> Result<()> {
+    /// Close the tabs hosting any live agents named in `names`, returning the
+    /// names actually closed. A name no live agent carries is skipped, so a
+    /// repeated close is a no-op rather than an error. That matters to
+    /// `zolly close`, which runs after a merge and may run twice.
+    pub fn close_agent_tabs(&self, names: &[&str]) -> Result<Vec<String>> {
         let agents = self.agent_list().context("Failed to list agents")?;
+        let mut closed = Vec::new();
         for name in names {
             let Some(pane_id) = agents
                 .iter()
@@ -832,8 +832,9 @@ impl HerdrClient {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 anyhow::bail!("herdr tab close failed for {}: {}", name, stderr);
             }
+            closed.push((*name).to_string());
         }
-        Ok(())
+        Ok(closed)
     }
 
     /// Submit a prompt without waiting for or reading a reply. The caller is
