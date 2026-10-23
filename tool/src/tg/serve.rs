@@ -356,7 +356,6 @@ pub(super) async fn handle_update(
         // Known keywords handled locally
         let response = match keyword.as_str() {
             "status" => handlers::handle_status(root),
-            "pulse" => handlers::handle_pulse(root),
             "approve" | "yes" => handlers::handle_approve(root),
             "decline" | "no" => handlers::handle_decline(root),
             "gates" => handlers::handle_gates(root),
@@ -605,11 +604,10 @@ where
 
 /// Every command registered in Telegram's slash menu, one row per synonym
 /// family. Must stay in sync with the keywords `handle_update` accepts
-/// (status, pulse, approve|yes, decline|no, gates, stalls, collab,
+/// (status, approve|yes, decline|no, gates, stalls, collab,
 /// help, plus the ask-words brief and liveness). `what's up` is an ask-word
 static REGISTERED_COMMANDS: &[(&str, &str)] = &[
     ("status", "Show current status (brief)"),
-    ("pulse", "Liveness pulse (who is running, what is stuck)"),
     ("approve", "Approve a gate (yes also works)"),
     ("decline", "Decline a gate (no also works)"),
     ("gates", "Show open gates and their owners"),
@@ -639,7 +637,6 @@ fn registered_commands_json() -> serde_json::Value {
 fn router_keywords() -> Vec<&'static str> {
     vec![
         "status",
-        "pulse",
         "approve",
         "decline",
         "gates",
@@ -658,7 +655,6 @@ fn is_router_keyword(word: &str) -> bool {
     matches!(
         word,
         "status"
-            | "pulse"
             | "approve"
             | "yes"
             | "decline"

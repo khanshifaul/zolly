@@ -50,7 +50,7 @@ pub struct WaitingStatus {
     pub recent_results: Vec<String>,
     pub stalled_results: Vec<String>,
     pub aged_results: usize,
-    /// Result files pulse cannot read a status from, fresh enough that they
+    /// Result files the brief cannot read a status from, fresh enough that they
     /// would otherwise have been reported as waiting. Each entry is
     /// `name — reason` (`queue::frontmatter_defect`). Loud, never a wait.
     pub unparseable_results: Vec<String>,
@@ -93,7 +93,7 @@ fn is_manager(name: &str) -> bool {
 /// **unsatisfiable for the only worker kind this office runs**: `herdr agent
 /// list` reports `agent_status: "idle"` for the *whole* turn of an omp agent
 /// (`fallback_reason: default_known_agent_idle_fallback`, measured
-/// 2026-10-14/16, `herdr.rs`). So `zolly pulse` printed "No workers running."
+/// 2026-10-14/16, `herdr.rs`). So `zolly brief` printed "No workers running."
 /// over an agent demonstrably mid-turn.
 ///
 /// The screen half is `herdr::screen_shows_working` — the corrected primitive
@@ -231,7 +231,7 @@ pub fn generate_brief(root: &Path) -> Result<Brief> {
     // Cost, deliberately bounded: one pane read per candidate, and the
     // managers are filtered out *before* any read. A normal office — 4 agents
     // (zolly, foreman, pr-reviewer, one worker) — costs exactly 1 read. No
-    // polling loop, nothing per-poll; `pulse` sits on the founder's brief
+    // polling loop, nothing per-poll; `brief` sits on the founder's read
     // path, so the bound is the agent list, never a rate.
     let mut working: Vec<WorkerInfo> = Vec::new();
     for a in &agents {
@@ -287,7 +287,7 @@ pub fn generate_brief(root: &Path) -> Result<Brief> {
                 .map(|m| now.saturating_sub(m))
                 .unwrap_or(u64::MAX);
 
-            // A file pulse cannot read a status from is a defect, not a
+            // A file the brief cannot read a status from is a defect, not a
             // waiting review. Reported as "waiting" it becomes a phantom —
             // twelve merged, closed tasks were listed that way on
             // 2026-10-16, two of them as "stalled over 2h".
@@ -360,7 +360,7 @@ pub fn generate_brief(root: &Path) -> Result<Brief> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // An empty repository is a state, not an error: a fresh office has
-        // zero commits and must still answer. Dying here made every pulse and
+        // zero commits and must still answer. Dying here made every brief and
         // brief on a template checkout look broken (wJ:p1, 2026-10-21).
         if !stderr.contains("does not have any commits yet") {
             anyhow::bail!("git log failed: {}", stderr);
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn unparseable_frontmatter_is_named_not_reported_as_waiting() {
         // Measured 2026-10-16: twelve merged, closed tasks were listed as
-        // "waiting for review" / "stalled over 2h" because pulse could not
+        // "waiting for review" / "stalled over 2h" because the brief could not
         // read their frontmatter and fell through to the age buckets. One
         // fixture per offender shape. Delete the `frontmatter_defect` arm
         // from `generate_brief` and every assertion here goes red: the three
@@ -576,7 +576,7 @@ mod tests {
         assert_eq!(
             b.waiting.unparseable_results,
             vec![
-                "t-blocked.md — `status: blocked` is not a status pulse can read (`done` or `failed`)"
+                "t-blocked.md — `status: blocked` is not a status the brief can read (`done` or `failed`)"
                     .to_string(),
                 "t-nofence.md — no `---` frontmatter block".to_string(),
                 "t-nostatus.md — frontmatter has no `status:` line".to_string(),
@@ -821,7 +821,7 @@ mod tests {
         // "working"`, no screen term — inside `worker_is_live` and this goes
         // red. That is the shipped defect: `herdr agent list` reports `idle`
         // for the *whole* turn of an omp agent, so the filter dropped every
-        // live worker and `pulse` printed "No workers running." over one.
+        // live worker and `brief` printed "No workers running." over one.
         let status_herdr_actually_reports = "idle";
         assert!(
             worker_is_live(status_herdr_actually_reports, WORKING_SCREEN),

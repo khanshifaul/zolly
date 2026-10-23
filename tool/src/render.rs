@@ -39,7 +39,7 @@ pub struct Sections {
     pub historical_gates: Vec<String>,
     pub stalls: Vec<String>,
     pub aged: usize,
-    /// Result files pulse cannot read, as `name — reason`. Rendered loudly
+    /// Result files the brief cannot read, as `name — reason`. Rendered loudly
     /// by both renderers — these are never counted as waiting.
     pub unparseable: Vec<String>,
     /// How many aged-out files share the same unreadable frontmatter.
@@ -152,11 +152,11 @@ pub fn render_cli(s: &Sections) -> String {
         ));
     }
 
-    // Loud, and separate from "waiting for review": a file pulse cannot read
+    // Loud, and separate from "waiting for review": a file the brief cannot read
     // must never be reported as a review it is waiting on.
     if !s.unparseable.is_empty() {
         out.push_str(&format!(
-            "⚠ {} pulse cannot read (NOT counted as waiting) — fix the frontmatter:\n",
+            "⚠ {} the brief cannot read (NOT counted as waiting) — fix the frontmatter:\n",
             plural(s.unparseable.len(), "result file")
         ));
         for u in &s.unparseable {
@@ -244,11 +244,11 @@ pub fn render_telegram(root: &Path, s: &Sections) -> String {
         ));
     }
 
-    // A file pulse cannot read is named with its reason, never reported as a
+    // A file the brief cannot read is named with its reason, never reported as a
     // review the office is waiting on.
     if !s.unparseable.is_empty() {
         out.push_str(&format!(
-            "⚠ {} pulse cannot read (NOT counted as waiting) — fix the frontmatter:\n",
+            "⚠ {} the brief cannot read (NOT counted as waiting) — fix the frontmatter:\n",
             plural(s.unparseable.len(), "result file")
         ));
         for u in &s.unparseable {
@@ -292,7 +292,7 @@ fn human_next_action(next: &str) -> &'static str {
         "nothing, I have it" => "Nothing for you right now — I've got it.",
         "review results" => "Next: review the results above.",
         "unparseable result frontmatter" | "repair the unparseable result frontmatter" => {
-            "Next: the result files listed above have unreadable frontmatter — fix them so pulse can read them."
+            "Next: the result files listed above have unreadable frontmatter — fix them so the brief can read them."
         }
         "unstall the stalled tasks" => "Next: the stalled tasks above need unsticking.",
         "resolve the waiting gates" => "Next: the gates above are waiting on you.",
@@ -488,7 +488,7 @@ mod tests {
         let s = sections(&dir, &brief);
         assert_eq!(s.unparseable.len(), 1);
         assert_eq!(s.unreadable_aged, 7);
-        assert_eq!(human_next_action(&s.next_action), "Next: the result files listed above have unreadable frontmatter — fix them so pulse can read them.");
+        assert_eq!(human_next_action(&s.next_action), "Next: the result files listed above have unreadable frontmatter — fix them so the brief can read them.");
 
         for (label, text) in [("cli", render_cli(&s)), ("telegram", render_telegram(&dir, &s))] {
             assert!(

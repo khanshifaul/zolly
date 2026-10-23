@@ -127,7 +127,7 @@ Only now, and only what is genuinely complete:
   find yourself typing `zolly telegram-day progress …`, that command does not
   exist — record the day in the handoff instead.
 - **Suspend anything that can message the founder overnight, and say that you
-  did.** A watcher unit that sends a tapable poll when `pulse` reports waiting
+  did.** A watcher unit that sends a tapable poll when `brief` reports waiting
   gates or stalls will keep a "closed" office talking — a promise kept in the
   wrong direction. Confirm the watcher's state with
   `systemctl --user list-timers`, then stop it and state it in the close report
