@@ -181,6 +181,46 @@ class InstallTests(unittest.TestCase):
             "a reinstall must not drop the day records",
         )
 
+    def test_force_does_not_rewrite_records_but_still_renders_templates(self):
+        # The placeholder pass runs after the restore. It used to sed every
+        # .md under .agents/, so a token inside a committed result became the
+        # frequency. Records are history: byte-identical. Templates render.
+        repo = self.make_repo("app")
+        self.assertEqual(self.install(repo).returncode, 0)
+        record = repo / ".agents" / "results" / "probe.md"
+        record.write_text("{{FREQUENCY}} {{PROJECT_NAME}}\n", encoding="utf-8")
+        archived = repo / ".agents" / "memory" / "archive" / "probe.md"
+        archived.write_text("{{FOUNDER}}\n", encoding="utf-8")
+        self.git("add", "-A", cwd=repo)
+        self.git("commit", "-q", "-m", "records", cwd=repo)
+
+        forced = self.install(repo, "--force")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+
+        self.assertEqual(
+            record.read_text(encoding="utf-8"), "{{FREQUENCY}} {{PROJECT_NAME}}\n",
+            "a reinstall must not rewrite a result",
+        )
+        self.assertEqual(
+            archived.read_text(encoding="utf-8"), "{{FOUNDER}}\n",
+            "a reinstall must not rewrite an archived record",
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", ".agents/results/", ".agents/memory/archive/"],
+            cwd=repo, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(status.stdout, "", "records changed on disk")
+        self.assertNotIn(
+            "{{", (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
+        )
+        self.assertIn(
+            'frequency = "app"',
+            (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "{{", (repo / ".agents" / "rules" / "workflows.md").read_text(encoding="utf-8")
+        )
+
     def test_binary_source_is_found_in_the_kit(self):
         # The crate ships in tool/. A dry run proves the installer found it
         # without paying for a real build.

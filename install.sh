@@ -104,6 +104,14 @@ TEMPLATE="$SCRIPT_DIR/.agents"
 # tar pipes below read this one list, so the backup and the copy cannot drift.
 TAR_EXCLUDES="--exclude=./worktrees --exclude=./runs --exclude=./zolly/tool/target"
 
+# Runtime records the installer restores from the backup: work in flight, work
+# finished, and day/event history. They are not templates, so the placeholder
+# pass must not touch them — a sed over a record silently rewrites what an
+# agent wrote. Paths are relative to .agents/ and are pruned by the
+# substitution find below. .agents/memory/ is a template and is still
+# rendered; only memory/archive/ is history.
+RECORD_EXCLUDES="results queue days events inbox trash memory/archive"
+
 # ---------------------------------------------------------------------------
 # defaults
 # ---------------------------------------------------------------------------
@@ -594,7 +602,18 @@ substitute() {
   _r=$(esc "$REMOTE")
   _d=$(esc "$FOUNDER")
 
-  find "$AGENTS_DIR" -type f \
+  # Records are history, not templates: prune them before the name test so sed
+  # never sees a file under them. The find runs from .agents/ so every pattern
+  # is the literal list above — a target path containing [ or * cannot turn a
+  # record path into a glob. Positional parameters are function-local in POSIX
+  # sh, so building the arguments here cannot leak upward.
+  set -- . '('
+  _sep=""
+  for _rec in $RECORD_EXCLUDES; do
+    set -- "$@" $_sep -path "./$_rec"
+    _sep="-o"
+  done
+  set -- "$@" ')' -prune -o -type f \
     \( -name '*.md' -o -name '*.toml' -o -name '*.sh' -o -name '*.py' \) \
     -exec sed -i \
         -e "s|{{FREQUENCY}}|$_f|g" \
@@ -603,6 +622,7 @@ substitute() {
         -e "s|{{REMOTE}}|$_r|g" \
         -e "s|{{FOUNDER}}|$_d|g" \
         {} +
+  ( cd "$AGENTS_DIR" && find "$@" )
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
