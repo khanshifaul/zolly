@@ -1,6 +1,6 @@
 //! `zolly telegram-nudge` — a durable office nudge.
 //!
-//! Reads `zolly pulse --json` and, when something is waiting on the founder,
+//! Reads `zolly brief --json` and, when something is waiting on the founder,
 //! sends one Telegram nudge: a **tapable poll** for gates (decisions) or a
 //! plain reply for stalls. Never sends when there is nothing to say, and
 //! never double-nudges within the minimum interval (persisted stamp file).
@@ -43,25 +43,25 @@ pub struct NudgeDecision {
     pub reason: String,
 }
 
-/// Parse `zolly pulse --json` output. `Brief` must match the pulse shape
+/// Parse `zolly brief --json` output. `Brief` must match the brief shape
 /// exactly (`gates`, `waiting.stalls`, `next_action`).
-fn parse_pulse_json(text: &str) -> Result<Brief> {
-    serde_json::from_str(text).context("Failed to parse `zolly pulse --json` output")
+fn parse_brief_json(text: &str) -> Result<Brief> {
+    serde_json::from_str(text).context("Failed to parse `zolly brief --json` output")
 }
 
-/// Run `zolly pulse --json` from `root` and return the parsed brief.
-pub fn read_pulse(root: &Path) -> Result<Brief> {
+/// Run `zolly brief --json` from `root` and return the parsed brief.
+pub fn read_brief(root: &Path) -> Result<Brief> {
     let exe = std::env::current_exe().context("Failed to locate the zolly binary")?;
     let output = Command::new(&exe)
-        .args(["pulse", "--json"])
+        .args(["brief", "--json"])
         .current_dir(root)
         .output()
-        .context("Failed to run `zolly pulse --json`")?;
+        .context("Failed to run `zolly brief --json`")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`zolly pulse --json` exited {}: {}", output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "-".into()), stderr);
+        anyhow::bail!("`zolly brief --json` exited {}: {}", output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "-".into()), stderr);
     }
-    parse_pulse_json(&String::from_utf8_lossy(&output.stdout))
+    parse_brief_json(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The persisted stamp: last nudge time as unix seconds, or None when absent
@@ -201,7 +201,7 @@ fn now_secs() -> u64 {
 
 /// Send one nudge per run, idempotently. Returns a one-line outcome.
 pub async fn cmd_nudge(root: &Path, min_interval_secs: u64) -> Result<String> {
-    let brief = read_pulse(root)?;
+    let brief = read_brief(root)?;
     let stamp = stamp_path(root);
     let now = now_secs();
     let decision = evaluate_nudge(root, &brief, &stamp, min_interval_secs, now);

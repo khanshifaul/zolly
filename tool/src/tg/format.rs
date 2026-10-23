@@ -10,7 +10,7 @@ use crate::render::DECISION_MARKER;
 
 /// Words that mean "give me the brief" — short-circuit to the rendered
 /// brief without ever calling the model.
-pub const ASK_WORDS: &[&str] = &["brief", "what's up", "status", "pulse", "liveness"];
+pub const ASK_WORDS: &[&str] = &["brief", "what's up", "status", "liveness"];
 
 /// Chat keywords handled locally, mapped to a help line for /help.
 pub const KEYWORD_HELP: &[(&str, &str)] = &[
@@ -248,7 +248,8 @@ mod tests {
         assert!(is_ask("brief"));
         assert!(is_ask("what's up"));
         assert!(is_ask("status please"));
-        assert!(is_ask("give me the pulse"));
+        assert!(is_ask("give me the brief"));
+        assert!(!is_ask("give me the pulse"));
         assert!(!is_ask("deploy now"));
     }
 

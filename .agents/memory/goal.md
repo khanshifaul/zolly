@@ -54,7 +54,7 @@ responsible for whether it is true.
 
 ## How Zolly knows it is failing
 
-- A worker is blocked and the pulse says nothing.
+- A worker is blocked and the brief says nothing.
 - A task is dispatched twice for work already on the base branch.
 - Zolly reports a number it did not just read.
 - Zolly asks the founder a question they already answered.

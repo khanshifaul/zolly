@@ -28,14 +28,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// The same brief as `zolly brief`, explicitly the liveness read.
-    /// Alias kept for offices whose persona still says `pulse`; `brief` is
-    /// the one visible name.
-    #[command(hide = true)]
-    Pulse {
-        #[arg(long)]
-        json: bool,
-    },
     /// Deterministic signals for an idle-curiosity pass. No model call.
     Curious {
         #[arg(long)]
@@ -191,8 +183,8 @@ enum Commands {
         #[arg(long)]
         text: String,
     },
-    /// Send a Telegram nudge when `zolly pulse --json` reports waiting gates
-    /// (a tapable poll) or stalls (a plain reply). Reuses the pulse JSON
+    /// Send a Telegram nudge when `zolly brief --json` reports waiting gates
+    /// (a tapable poll) or stalls (a plain reply). Reuses the brief JSON
     /// instead of re-deriving gate state. Idempotent via a persisted stamp
     /// file under `.agents/zolly/`; sends nothing when there is nothing to say.
     TelegramNudge {
@@ -226,7 +218,6 @@ async fn main() -> Result<()> {
         Commands::RegisterPane => register_pane(&herdr, &root),
         Commands::Init => init(&herdr, &root),
         Commands::Brief { json } => brief_cmd(&root, json),
-        Commands::Pulse { json } => brief_cmd(&root, json),
         Commands::Curious { json } => curious_cmd(&root, json),
         Commands::Ponder {
             json,
@@ -379,7 +370,7 @@ fn seat(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
 }
 
 /// The one-page state the manager starts from. It replaces the survey the
-/// manager used to run (git status, pulse, memory reads) with facts measured
+/// manager used to run (git status, brief, memory reads) with facts measured
 /// once, at seat time.
 fn write_boot_state(
     root: &std::path::Path,

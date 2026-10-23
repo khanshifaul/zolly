@@ -223,7 +223,7 @@ fn status_is_readable(value: &str) -> bool {
 /// `None` when it can. The reason names the defect, never the symptom.
 ///
 /// This is the loud path that replaces a silent one: a file whose frontmatter
-/// carries no status pulse can read used to fall through to the age buckets
+/// carries no status the brief can read used to fall through to the age buckets
 /// in `brief::generate_brief` and be reported as "waiting for review" or
 /// stalled. That is how twelve merged, closed tasks — whose result files were
 /// all present on `origin/main` — were listed as outstanding on 2026-10-16,
@@ -240,7 +240,7 @@ pub fn frontmatter_defect(content: &str) -> Option<String> {
     let value = fm.status_value.as_deref().unwrap_or("");
     if !status_is_readable(value) {
         return Some(format!(
-            "`status: {value}` is not a status pulse can read (`done` or `failed`)"
+            "`status: {value}` is not a status the brief can read (`done` or `failed`)"
         ));
     }
     None
@@ -484,7 +484,7 @@ mod tests {
         let unreadable = "---\nid: t-k3s-deploy-prisma-rerun\nstatus: blocked\ngate: human — no kubectl here\n---\nBody";
         assert_eq!(
             frontmatter_defect(unreadable).as_deref(),
-            Some("`status: blocked` is not a status pulse can read (`done` or `failed`)")
+            Some("`status: blocked` is not a status the brief can read (`done` or `failed`)")
         );
 
         // Every value the parser can act on is readable — including the

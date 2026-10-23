@@ -1229,7 +1229,7 @@ impl HerdrClient {
             .filter(|a| {
                 // A worker lives in a worktree workspace, not the office
                 // workspace. Its cwd is still under the office root; use that
-                // as the second boundary so the pulse does not lose it.
+                // as the second boundary so the brief does not lose it.
                 let under_root = Path::new(&a.cwd)
                     .canonicalize()
                     .map(|cwd| cwd.starts_with(&root))

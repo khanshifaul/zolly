@@ -1,5 +1,5 @@
 //! Keyword and subcommand handlers: the approval loop (status/approve/
-//! decline), pulse/gates/stalls reads, watch alerts, day journaling, the
+//! decline), gates/stalls reads, watch alerts, day journaling, the
 //! hourly report, and OMP collab links. Everything that mutates the queue
 //! goes through `queue::parse_frontmatter`, so approve/decline/status can
 //! never disagree about what counts as pending.
@@ -237,68 +237,6 @@ fn commit_marker(root: &Path, path: &Path, message: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Read-only status text for chat keywords
 // ---------------------------------------------------------------------------
-
-pub fn handle_pulse(root: &Path) -> Result<String> {
-    let b = brief::generate_brief(root).context("Failed to generate brief")?;
-    let s = render::sections(root, &b);
-    let mut output = String::new();
-
-    output.push_str(&format!("Workers: {} running\n", s.workers.len()));
-    for (name, pane) in &s.workers {
-        output.push_str(&format!("  - {} (pane: {})\n", name, pane));
-    }
-
-    output.push_str(&format!("\nRecent results: {}\n", s.results.len()));
-    for r in &s.results {
-        output.push_str(&format!("  - {}\n", r));
-    }
-
-    if !s.unverified.is_empty() {
-        output.push_str(&format!(
-            "\nUNVERIFIED (a crashed review is not a pass): {}\n",
-            s.unverified.join(", ")
-        ));
-    }
-
-    // A file pulse cannot read is named with its reason and never counted as
-    // a review the office is waiting on.
-    if !s.unparseable.is_empty() {
-        output.push_str(&format!(
-            "\n⚠ {} pulse cannot read (NOT counted as waiting) — fix the frontmatter:\n",
-            s.unparseable.len()
-        ));
-        for u in &s.unparseable {
-            output.push_str(&format!("  - {}\n", u));
-        }
-    }
-
-    if !s.gates.is_empty() {
-        output.push_str("\nGates waiting on you:\n");
-        for g in &s.gates {
-            output.push_str(&format!("  - {}\n", g));
-        }
-    }
-
-    if !s.historical_gates.is_empty() {
-        output.push_str(&format!(
-            "\nSettled gates (task merged — historical, not waiting): {}\n",
-            s.historical_gates.join(", ")
-        ));
-    }
-
-    output.push_str(&format!("\nCommits (2h): {}\n", s.commits));
-
-    if s.stalls.is_empty() {
-        output.push_str("\nStalls: none\n");
-    } else {
-        output.push_str("\nStalls:\n");
-        for st in &s.stalls {
-            output.push_str(&format!("  - {}\n", st));
-        }
-    }
-
-    Ok(output)
-}
 
 /// `/gates` — just the gates, so a decision request is not buried.
 pub fn handle_gates(root: &Path) -> Result<String> {
