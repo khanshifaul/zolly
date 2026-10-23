@@ -75,6 +75,12 @@ is never silently picked up by a second worker.
 approved there (`approved: yes` immediately after the gate line, committed on
 the task branch). An agent never passes it.
 
+The `gate:` line in the queue file is a declaration, not a waiting gate:
+`zolly brief` reads gates from the result file, wherever that file is
+canonical (the worktree, the main checkout, or the task branch). A queued
+gate appears in the brief when the worker copies it into the result file —
+never while it is only a plan.
+
 ## Path
 
 `.agents/queue/<task-id>.md`. Never `results/`, never `reports/queue/`.
