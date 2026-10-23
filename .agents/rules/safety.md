@@ -60,7 +60,7 @@ attribute every action to them.
 ## Gates
 
 `gate: human` means the founder's decision. **The founder** approves only on an
-exact `haa`/`ha`/`yes` match to that specific task. Never infer an approval from
+exact `approve`/`yes` match to that specific task. Never infer an approval from
 tone, silence, or a prior approval of a different task. An agent may report a
 pending gate; it may never pass one.
 

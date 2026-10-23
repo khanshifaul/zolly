@@ -108,7 +108,7 @@ The Telegram listener is a long-lived systemd user service
 `~/.local/bin/zolly` does **not** restart it: the running process keeps
 executing the deleted old inode, and `/proc/<pid>/exe` reads
 `…/zolly (deleted)`. The CLI picks up a new build immediately; the founder's
-Telegram `haa` and `status` keep running the old code. A fix can be *in the
+Telegram `approve` and `status` keep running the old code. A fix can be *in the
 binary* and still not reach the founder.
 
 After rebuilding or reinstalling the tool, verify the listener actually

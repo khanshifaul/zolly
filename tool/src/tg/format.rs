@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn normalise_strips_slash_botname_and_punctuation() {
         assert_eq!(normalise_keyword("/Status@MyBot."), "status");
-        assert_eq!(normalise_keyword("  HAA!  "), "haa");
+        assert_eq!(normalise_keyword("  YES!  "), "yes");
         assert_eq!(normalise_keyword("what's up?"), "what's up");
     }
 

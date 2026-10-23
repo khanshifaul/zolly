@@ -47,7 +47,7 @@ Different roles have different reporting requirements:
 
 1. Founder creates `.agents/hr/<role>.md` with frontmatter (title, reports_to,
    Why section, status: pending)
-2. Founder approves it: `hr.py approve <role>` (or `haa` in Telegram). HR cannot
+2. Founder approves it: `hr.py approve <role>` (or `approve` in Telegram). HR cannot
    approve its own hire — `hire` refuses a request that is not `status: approved`.
 3. `hr.py hire <role>` renders the persona to `.agents/worker/<role>.md`
 4. Creates the `.agents/hr/<role>.hired` receipt

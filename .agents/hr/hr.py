@@ -3,7 +3,7 @@
 hr.py — HR. Turns an approved hiring request into a real worker persona.
 
 The founder files a hiring request as `.agents/hr/<role>.md`. That request waits
-on the founder's approval (`hr.py approve <role>`, or `haa` in Telegram). This
+on the founder's approval (`hr.py approve <role>`, or `approve` in Telegram). This
 is the step that turns the yes into a file. Until it exists, a hire is paperwork.
 
     hr.py list                        # every role: on paper, and its state
@@ -240,7 +240,7 @@ def do_hire(role: str, *, force: bool = False, dry_run: bool = False) -> int:
         # The whole point of the gate. HR does not get to approve its own hire.
         print(
             f"hr: {role} is '{status}', not 'approved'. Approval is the founder's —\n"
-            f"    run 'hr.py approve {role}' or send 'haa' in Telegram.",
+            f"    run 'hr.py approve {role}' or send 'approve' in Telegram.",
             file=sys.stderr,
         )
         return 1
