@@ -150,6 +150,14 @@ pub struct WorktreeRemoval {
     pub workspace_error: Option<String>,
 }
 
+/// The result of a framed prompt. `text` is the captured reply; `detail`
+/// explains a missing reply without turning a delivered prompt into a
+/// "failed to prompt" signal. Callers must not resend when `text` is None.
+pub struct PromptReply {
+    pub text: Option<String>,
+    pub detail: String,
+}
+
 /// Reply content is everything after the LAST occurrence of `marker` on screen.
 ///
 /// `marker` is a random nonce that appears in the framed prompt (once, on the
@@ -1098,7 +1106,7 @@ impl HerdrClient {
         name: &str,
         prompt: &str,
         timeout_ms: u64,
-    ) -> Result<String> {
+    ) -> Result<PromptReply> {
         use std::time::{Duration, Instant};
         let start = Instant::now();
         let nonce = format!("ZZ{}", uuid_nonce());
@@ -1117,54 +1125,71 @@ impl HerdrClient {
 
         self.agent_prompt_only(name, &framed)
             .with_context(|| format!("Failed to prompt agent {}", name))?;
-        // The prompt lands (the working glyph appears) — with an Enter nudge
-        // if the TUI is holding the paste unsubmitted.
-        let remaining = timeout_ms.saturating_sub(start.elapsed().as_millis() as u64);
-        if !self.wait_turn_started(name, remaining)? {
-            anyhow::bail!(
-                "Agent {} did not start processing the prompt within {}ms",
-                name,
-                timeout_ms
-            );
-        }
-        // Settle loop: the agent may pause idle between tool calls.
-        // Use a time budget (75% of remaining timeout) instead of fixed rounds
-        // so a reviewer with many tool calls isn't cut off after 4 rounds.
-        let settle_budget_ms = timeout_ms.saturating_mul(3).saturating_div(4);
-        const SETTLE_MS: u64 = 400;
-        let settle_deadline = Instant::now() + Duration::from_millis(settle_budget_ms);
-        loop {
+
+        // Everything after this point is reply capture, not delivery. A
+        // timeout here must not read as "failed to prompt": the prompt was
+        // accepted by herdr, and re-sending it would duplicate the task.
+        let captured: Result<String> = (|| {
+            // The prompt lands (the working glyph appears) — with an Enter
+            // nudge if the TUI is holding the paste unsubmitted.
             let remaining = timeout_ms.saturating_sub(start.elapsed().as_millis() as u64);
-            self.agent_wait(name, remaining)
-                .with_context(|| format!("Agent {} did not become idle in time", name))?;
-            std::thread::sleep(Duration::from_millis(SETTLE_MS));
-            if !self.agent_is_working(name)? {
-                break;
+            if !self.wait_turn_started(name, remaining)? {
+                anyhow::bail!(
+                    "turn did not start within {timeout_ms}ms; the prompt may still be held in the pane"
+                );
             }
-            if Instant::now() >= settle_deadline {
-                break;
+            // Settle loop: the agent may pause idle between tool calls.
+            // Use a time budget (75% of remaining timeout) instead of fixed
+            // rounds so a reviewer with many tool calls isn't cut off after
+            // 4 rounds.
+            let settle_budget_ms = timeout_ms.saturating_mul(3).saturating_div(4);
+            const SETTLE_MS: u64 = 400;
+            let settle_deadline = Instant::now() + Duration::from_millis(settle_budget_ms);
+            loop {
+                let remaining = timeout_ms.saturating_sub(start.elapsed().as_millis() as u64);
+                self.agent_wait(name, remaining)
+                    .with_context(|| format!("agent {name} did not become idle in time"))?;
+                std::thread::sleep(Duration::from_millis(SETTLE_MS));
+                if !self.agent_is_working(name)? {
+                    break;
+                }
+                if Instant::now() >= settle_deadline {
+                    break;
+                }
             }
-        }
 
-        // Primary path: read the clean assistant text from the session
-        // JSONL. This gives structured text with no tool chrome, no box
-        // drawing, no spinner glyphs — just the model's reply.
-        if let Some(text) = self.read_session_reply(project, &mtime_before, &nonce) {
-            let cleaned = text.trim().to_string();
-            if !reply_is_undeliverable(&cleaned) {
-                return Ok(cleaned);
+            // Primary path: read the clean assistant text from the session
+            // JSONL. This gives structured text with no tool chrome, no box
+            // drawing, no spinner glyphs — just the model's reply.
+            if let Some(text) = self.read_session_reply(project, &mtime_before, &nonce) {
+                let cleaned = text.trim().to_string();
+                if !reply_is_undeliverable(&cleaned) {
+                    return Ok(cleaned);
+                }
             }
-        }
 
-        // Fallback: screen-scrape. `agent_read_reply` gates every poll through
-        // `terminal_reply_outcome`, so it returns only a nonce-framed,
-        // deliverable reply and otherwise bails with the reply-budget timeout.
-        // An unframed pane fragment — a task widget, a box border — is therefore
-        // never handed back as a reply. The old second 40-line re-read is gone:
-        // an identical read of the same screen returned the same fragment, so it
-        // could not change the outcome.
-        let remaining = timeout_ms.saturating_sub(start.elapsed().as_millis() as u64);
-        self.agent_read_reply(name, 40, &nonce, remaining)
+            // Fallback: screen-scrape. `agent_read_reply` gates every poll
+            // through `terminal_reply_outcome`, so it returns only a
+            // nonce-framed, deliverable reply and otherwise bails with the
+            // reply-budget timeout. An unframed pane fragment — a task
+            // widget, a box border — is therefore never handed back as a
+            // reply. The old second 40-line re-read is gone: an identical
+            // read of the same screen returned the same fragment, so it
+            // could not change the outcome.
+            let remaining = timeout_ms.saturating_sub(start.elapsed().as_millis() as u64);
+            self.agent_read_reply(name, 40, &nonce, remaining)
+        })();
+
+        match captured {
+            Ok(text) => Ok(PromptReply {
+                text: Some(text),
+                detail: "reply captured".to_string(),
+            }),
+            Err(e) => Ok(PromptReply {
+                text: None,
+                detail: format!("{e:#}"),
+            }),
+        }
     }
 
     /// Read the last assistant text from the project's most recent session

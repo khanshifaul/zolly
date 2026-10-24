@@ -113,6 +113,10 @@ You never open a worktree or start a worker.
 
 `zolly foreman "<task description with clear acceptance criteria>"`
 
+If the command prints `prompt submitted; … do not resend it`, the brief
+reached the seat and only the reply capture timed out. Do not send it again;
+inspect the foreman pane and recover only if the task is genuinely absent.
+
 Continuity: check `.agents/results/` and `git log`. Same domain or epic as
 earlier work? Say so and ask foreman to **reuse the same worker** — it already
 holds the context.
@@ -127,8 +131,9 @@ Only foreman opens a worktree. You never do.
 PASS. Returns `PASS: merged <sha> — <url>` or `OBJECTION: <what> — <where>`.
 
 Reviewer is the only path to main and may push to main (founder decision,
-2026-10-12). You do not merge or push. Reviewer failed (mangled reply,
-timeout)? Hand to foreman: `zolly foreman "recover the review of <TASK_ID> and close it"`.
+2026-10-12). You do not merge or push. Reviewer printed no verdict because the
+seat was busy or the reply timed out? Do not resend the reviewer command; hand
+it to foreman: `zolly foreman "recover the review of <TASK_ID> and close it"`.
 
 ## §7 close
 

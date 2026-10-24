@@ -1240,6 +1240,16 @@ fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
     }
 }
 
+fn report_prompt_reply(role: &str, reply: herdr::PromptReply) {
+    match reply.text {
+        Some(text) => println!("{}", text.trim()),
+        None => eprintln!(
+            "{role}: prompt submitted; {} — do not resend it. Inspect the seat, then recover if needed.",
+            reply.detail
+        ),
+    }
+}
+
 fn foreman(
     herdr: &herdr::HerdrClient,
     root: &std::path::Path,
@@ -1254,7 +1264,7 @@ fn foreman(
     let reply = herdr
         .agent_prompt_with_reply(&office.agent("foreman"), prompt, timeout_ms)
         .context("Failed to prompt foreman")?;
-    println!("{}", reply.trim());
+    report_prompt_reply("foreman", reply);
     Ok(())
 }
 
@@ -1269,7 +1279,7 @@ fn reviewer(
     let reply = herdr
         .agent_prompt_with_reply(&office.agent("pr-reviewer"), &prompt, timeout_ms)
         .context("Failed to prompt reviewer")?;
-    println!("{}", reply.trim());
+    report_prompt_reply("reviewer", reply);
     Ok(())
 }
 
@@ -1937,13 +1947,19 @@ fn close_branch(
             false,
         );
     }
-    if !git_ok(repo, &["merge-base", "--is-ancestor", branch, &base_ref]) {
+    let ancestor = git_ok(repo, &["merge-base", "--is-ancestor", branch, &base_ref]);
+    // A squash merge rewrites history: the branch tip is not an ancestor of
+    // the base, but its tree is identical to the merged base. Treat content
+    // equality as merged unless the branch has commits carrying a different
+    // tree — otherwise every close after a squash merge leaves the branch.
+    let same_tree = !ancestor && git_ok(repo, &["diff", "--quiet", &base_ref, branch]);
+    if !ancestor && !same_tree {
         let unmerged = git_out(repo, &["rev-list", "--count", &format!("{base_ref}..{branch}")])
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "?".to_string());
         return (
             StepOutcome::new(
-                format!("{branch} has {unmerged} commit(s) not in {base_ref} — KEPT"),
+                format!("{branch} has {unmerged} commit(s) and a different tree from {base_ref} — KEPT"),
                 &format!("kept ({unmerged} not in base)"),
                 false,
             ),
@@ -1953,7 +1969,14 @@ fn close_branch(
     match git_out(repo, &["branch", "-D", branch]) {
         Ok(_) => (
             StepOutcome::new(
-                format!("{branch} contained in {base_ref} — deleted"),
+                format!(
+                    "{branch} {} {base_ref} — deleted",
+                    if ancestor {
+                        "contained in"
+                    } else {
+                        "content identical to"
+                    }
+                ),
                 "deleted",
                 false,
             ),
@@ -1964,7 +1987,14 @@ fn close_branch(
             if reason.contains("used by worktree") || reason.contains("checked out") {
                 (
                     StepOutcome::new(
-                        format!("{branch} contained in {base_ref} — held by a worktree, delete deferred to step 3"),
+                        format!(
+                            "{branch} {} {base_ref} — held by a worktree, delete deferred to step 3",
+                            if ancestor {
+                                "contained in"
+                            } else {
+                                "content identical to"
+                            }
+                        ),
                         "deferred to step 3",
                         false,
                     ),
@@ -2142,8 +2172,14 @@ fn gc(
             continue;
         };
         if has_unique > 0 {
-            kept_dirty.push(branch);
-            continue;
+            // Squash merges rewrite history, so a merged branch has commits
+            // that are not ancestors of the base. Tree equality proves the
+            // work landed; only a different tree is genuinely unmerged.
+            let same_tree = git_ok(root, &["diff", "--quiet", &base, &branch]);
+            if !same_tree {
+                kept_dirty.push(branch);
+                continue;
+            }
         }
 
         if dry {
@@ -2980,6 +3016,55 @@ mod close_tests {
         assert!(msg.contains("3 commit(s) ahead"), "{msg}");
         assert!(msg.contains("17 commit(s) behind"), "{msg}");
         assert!(msg.contains("merge --ff-only origin/main"), "{msg}");
+    }
+
+    #[test]
+    fn close_branch_deletes_a_squash_merged_branch_by_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "zolly-squash-close-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "base"]);
+        git(&["branch", "foreman/t1"]);
+        git(&["checkout", "-q", "foreman/t1"]);
+        std::fs::write(dir.join("task.txt"), "task\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "task"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--squash", "foreman/t1"]);
+        git(&["commit", "-q", "-m", "squash task"]);
+        git(&["update-ref", "refs/remotes/origin/main", "refs/heads/main"]);
+
+        let (step, deferred) = close_branch(&dir, "foreman/t1", "main", "origin");
+        assert_eq!(step.token, "deleted", "{}", step.line);
+        assert!(step.line.contains("content identical"), "{}", step.line);
+        assert!(!deferred);
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "foreman/t1"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&branches.stdout).trim().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

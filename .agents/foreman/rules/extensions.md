@@ -97,7 +97,7 @@ into its PR. The base is always the merge.
    brief, answer its questions. Reuse the same worker for a follow-up on the
    same task; it already holds the context.
 5. Worker writes result to `.agents/results/<task-id>.md` **on the task branch** (in `.agents/worktrees/<task-id>/`), committed there before review. The main-checkout copy is never authoritative: the reviewer reads the branch copy.
-6. `zolly close <task-id>` → closes the worker's Herdr workspace/tab, removes the worktree, and deletes the branch
+6. `zolly close <task-id>` → closes the worker's Herdr workspace/tab, removes the worktree, and deletes the branch. A branch whose tree matches the base is deleted even when a squash merge left its commits outside the base ancestry.
 
 ### Merged branches are leftovers — delete them
 
