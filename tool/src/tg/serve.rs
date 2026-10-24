@@ -317,6 +317,17 @@ pub(super) async fn handle_update(
             return Ok(());
         }
 
+        // Replying to `chat.id` in a group would expose the brief and the
+        // collab control link to every member. The founder channel is the
+        // private chat whose id is the sender's id.
+        if message.chat.chat_type != "private" || message.chat.id != from_id {
+            eprintln!(
+                "Ignored message from authorized user {} in non-private chat {} ({})",
+                from_id, message.chat.id, message.chat.chat_type
+            );
+            return Ok(());
+        }
+
         let chat_id = message.chat.id;
         let text = message.text.as_deref().unwrap_or("").trim();
 
@@ -739,21 +750,27 @@ pub async fn cmd_serve(root: &Path) -> Result<()> {
         // Watchdog: check for pending replies that timed out
         let now = now_secs();
         let mut to_remove = Vec::new();
+        let mut expired = Vec::new();
         {
             let mut pending = PENDING_REPLIES.lock();
             for (chat_id, (sent_at, question)) in pending.iter() {
                 if now.saturating_sub(*sent_at) > ZOLLY_TOOL_TIMEOUT_SECS {
                     to_remove.push(*chat_id);
-                    // Send fallback message
                     let fallback = format!(
                         "⏱ Zolly didn't reply within {} minutes. The question was: \"{}\"\n\nTry again, or use /status /collab /help for instant answers.",
                         ZOLLY_TOOL_TIMEOUT_SECS / 60,
                         question
                     );
+                    expired.push((*chat_id, fallback));
                 }
             }
             for chat_id in to_remove {
                 pending.remove(&chat_id);
+            }
+        }
+        for (chat_id, fallback) in expired {
+            if let Err(e) = dispatch.send(chat_id, &fallback).await {
+                eprintln!("watchdog: failed to send timeout notice to {chat_id}: {e:#}");
             }
         }
 
@@ -1092,6 +1109,48 @@ mod tests {
             }
         }))
         .expect("a message update deserializes")
+    }
+
+    fn group_update(update_id: i64, from_id: i64, chat_id: i64, text: &str) -> Update {
+        serde_json::from_value(serde_json::json!({
+            "update_id": update_id,
+            "message": {
+                "message_id": 1,
+                "from": {"id": from_id, "is_bot": false, "first_name": "Shifaul"},
+                "chat": {"id": chat_id, "type": "supergroup"},
+                "date": 0,
+                "text": text
+            }
+        }))
+        .expect("a group update deserializes")
+    }
+
+    #[tokio::test]
+    async fn an_authorized_group_message_never_prompts_or_replies() {
+        let dir = test_dir("poll-group");
+        let offset_path = dir.join("telegram_offset.txt");
+        let dispatch = RecordingDispatch::default();
+
+        poll_and_advance(
+            &dispatch,
+            &dir,
+            &[42],
+            &offset_path,
+            0,
+            || async { Ok(vec![group_update(11, 42, -1001, "/help")]) },
+        )
+        .await
+        .expect("a healthy poll returns");
+
+        assert!(
+            dispatch.sent().is_empty(),
+            "a group chat must not receive the brief or a control link"
+        );
+        assert!(
+            dispatch.prompted().is_empty(),
+            "a group chat must not prompt the manager"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The poll path runs the real `handle_update`: a `/help` message is

@@ -32,6 +32,12 @@ gate: human | auto
 ## Blockers
 
 <what stopped this, or "none">
+
+## Reflection
+
+<what was corrected, whether it recurred or cost real time, and whether it was
+recorded as a learning or promoted to a rule. "Nothing to record" is a valid
+answer — a summary is not a reflection.>
 ```
 
 ## Fields
@@ -47,6 +53,20 @@ gate: human | auto
 | `## Verify` | yes | commands run + output. If no commands, say "none — file-only change" |
 | `## Commit` | yes | commit SHA, or "not committed" |
 | `## Blockers` | yes | what stopped this, or "none" |
+| `## Reflection` | yes | corrections, recurrence or cost, and whether the learning was recorded or promoted; "nothing to record" is valid |
+
+## The Reflection section
+
+A summary says what happened; a reflection says what was **wrong** and what the
+next agent should do differently. Record only corrections that recurred or cost
+real time. If the lesson is now always true, promote it to a rule and retract
+the learning. "Nothing to record" is a valid result; do not pad it.
+
+## The results index
+
+`.agents/memory/results-index.md` is the durable one-row-per-task spine. The
+**reviewer** appends its row on the task branch before the squash merge; the
+worker must not write it. The detailed evidence stays in this result file.
 
 ## Cite a rule by its phrase, not by its line number
 
@@ -212,7 +232,7 @@ the check **cries wolf**: on a clean office, measured 2026-10-22, it returned
 artefacts (`.rlib`, `.rmeta` — Rust dependencies, where the term appears as a
 coincidental byte run inside a binary), and the rest were markdown in
 `.agents/trash/`, a gitignored scratch folder. The **published** surface was
-clean the whole time: `git grep -nwF -- "$term" origin/main`
+clean the whole time: `git grep -nwF -- "$term" {{REMOTE}}/{{BASE_BRANCH}}`
 returns nothing.
 
 A privacy check that reports hits on a clean office teaches its reader to
@@ -225,7 +245,7 @@ agent hits first because it greps a directory and gets a wall of paths.
 "tracked files, and `.agents/results/` once merged". The exclusions make the
 command match that definition: what is left is files a person could read and a
 reader could see. If you want the published surface exactly, use
-`git grep -nwF -- "$term" origin/main` — that one has no
+`git grep -nwF -- "$term" {{REMOTE}}/{{BASE_BRANCH}}` — that one has no
 artefacts in it by construction, because git only searches tracked files.
 
 `radio log`, **never** `radio show <id>`. `radio show` is not a read — it is an

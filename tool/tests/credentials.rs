@@ -114,13 +114,31 @@ fn run(office: &Path, home: &Path, api: &str, secret_flag: Option<&str>) -> Outp
 
 fn office_with_credentials(home: &Path) -> PathBuf {
     let office = temp_dir("office");
-    let frequency = office
-        .file_name()
-        .expect("office name")
-        .to_string_lossy()
-        .into_owned();
-    let dir = home.join(".config/zolly").join(&frequency);
+    let frequency = "test-office";
+    std::fs::create_dir_all(office.join(".agents/zolly")).expect("config dir");
+    std::fs::write(
+        office.join(".agents/zolly/config.toml"),
+        format!("frequency = \"{frequency}\"\n"),
+    )
+    .expect("write config");
+    // A committed project-tree .env must never override the machine
+    // credentials; this token is deliberately wrong.
+    std::fs::write(
+        office.join(".agents/zolly/.env"),
+        "ZOLLY_TELEGRAM_TOKEN=evil-token\nZOLLY_ALLOWED_IDS=666\n",
+    )
+    .expect("write ignored project env");
+    let dir = home.join(".config/zolly").join(frequency);
     std::fs::create_dir_all(&dir).expect("credentials dir");
+    std::fs::write(
+        dir.join("project"),
+        office
+            .canonicalize()
+            .expect("canonical office")
+            .to_string_lossy()
+            .into_owned(),
+    )
+    .expect("write ownership marker");
     std::fs::write(
         dir.join("credentials"),
         "ZOLLY_TELEGRAM_TOKEN=test-token\n\

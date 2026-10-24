@@ -378,7 +378,8 @@ def cmd_check(_args: list[str]) -> int:
 
 def cmd_hire(args: list[str]) -> int:
     dry_run = "--dry-run" in args
-    if args and args[0] == "--all":
+    force = "--force" in args
+    if "--all" in args:
         todo = [
             role for role, _, fm in requests()
             if fm.get("status") == "approved" and not is_hired(role)
@@ -388,9 +389,8 @@ def cmd_hire(args: list[str]) -> int:
             return 0
         rc = 0
         for role in todo:
-            rc |= do_hire(role, dry_run=dry_run)
+            rc |= do_hire(role, force=force, dry_run=dry_run)
         return rc
-    force = "--force" in args
     roles = [a for a in args if not a.startswith("-")]
     if len(roles) != 1:
         print('usage: hr.py hire <role> | hr.py hire --all [--force] [--dry-run]', file=sys.stderr)

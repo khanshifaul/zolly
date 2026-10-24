@@ -160,6 +160,7 @@ register; a file with no row is a file nobody opens.
 | `memory/goal.md` | the manager, at session start | the `@` token below |
 | `memory/personality.md` | the manager | named in `zolly/agent.md` and `memory/goal.md` |
 | `memory/entity-store.schema.md` | whoever builds an entity index | named in `memory/README.md` |
+| `memory/results-index.md` | anyone asking what shipped | named in `memory/README.md`; the reviewer appends the row before merge |
 | `memory/archive/.gitkeep` | git | keeps `memory/archive/` in the tree so the overflow directory exists on a fresh clone |
 | `shared/memory` | every agent that remembers | named in `rules/learned.md` and `memory/README.md` |
 | `hr/hr.py` | HR, and anyone filing a hire | self-describing `--help`; the command block in `hr/rules/extensions.md` |

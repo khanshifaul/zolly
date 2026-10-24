@@ -32,6 +32,10 @@ agent made, not a verified fact. Corrections never delete: a new entry
 `Supersedes:` the old one, so the next agent can see the question was already
 answered.
 
+`confirm` is a **workflow convention, not a cryptographic gate**. Any process
+running as the same OS user can edit the store directly. The value is that a
+human looked and recorded the decision; the file is not tamper-proof.
+
 ## What earns promotion to a rule
 
 Promote when the learning is:

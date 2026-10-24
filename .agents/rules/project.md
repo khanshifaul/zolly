@@ -47,8 +47,9 @@ the tree is right and this file is a bug — fix it here.
 
 ## Size thresholds
 
-These are the numbers `rules/workflows.md` points at when it says "meets the
-project's LARGE threshold".
+These are the numbers the foreman and worker use when scoping a change. They
+are **not** read by `zolly route`: that command is a fixed instruction
+heuristic (45 words, 3 paths, keyword lists), not a diff-size judgement.
 
 | Threshold | Value |
 |---|---|

@@ -8,9 +8,10 @@ One machine-wide binary · N per-project offices · rules, personas, memory, HR,
 MCP, one-line installer.
 
 [![Rust](https://img.shields.io/badge/rust-2024-orange?logo=rust)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![One-line install](https://img.shields.io/badge/install-one%20command-blue)](#quick-start)
 
-[Quick start](#quick-start) · [Features](#features) · [Configuration](#configuration) · [Advanced](#advanced) · [Limitations](#limitations)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Features](#features) · [Configuration](#configuration) · [Comparison](COMPARISON.md) · [Advanced](#advanced) · [Limitations](#limitations)
 
 </div>
 
@@ -18,6 +19,12 @@ MCP, one-line installer.
 > per-project `.agents/` kit, and optional Telegram/systemd wiring — so agents
 > work with project-specific rules, personas, and memory without cross-project
 > collisions.
+>
+> **zolly is a control plane, not a harness.** The agents run in `omp`; zolly
+> decides what runs, where it runs, and whether it may land.
+>
+> **Status:** pre-1.0. The kit ships tests (`./test.sh`, `cargo test`), but
+> interfaces may change and no benchmarks are published yet.
 
 ## Quick start
 
@@ -51,8 +58,18 @@ are cut from the base branch.
 - **POSIX shell + curl** — the one-line installer.
 - **Rust toolchain (cargo)** — only to build the shared binary. Use
   `--no-binary` with a preinstalled `~/.local/bin/zolly` to skip it.
+- **omp** — the agent harness that runs the manager, foreman, worker and
+  reviewer personas. zolly does not ship a model or a coding agent.
+- **herdr** — the pane, tab and worktree server the seats run in.
+- **radio (optional)** — the AgentRadio bus. When installed it is the first
+  choice for `zolly init` and `zolly bus`; when absent, seats still start and
+  `zolly bus` falls back to a one-line `herdr agent prompt`.
+- **gh** — the GitHub CLI, authenticated against the project's remote. The
+  default worker/reviewer flow opens and merges PRs with it.
+- **A GitHub remote** — the close path needs a PR. A local-only repo can install,
+  but the review gate has nowhere to land without a remote.
 - **Linux + a systemd user session** — only for the listener unit. The office
-  itself works without systemd.
+  itself works without systemd; no Windows path is documented.
 - **Optional:** a Telegram bot token; `voxtype` + `ffmpeg` for inbound voice
   transcription; Piper for voice replies; a public HTTPS endpoint for webhook
   mode; GitNexus for the optional code graph.
@@ -69,7 +86,7 @@ are cut from the base branch.
 | 📋 **Queue + review** | Task queue, result files and the approval gate. |
 | 🎙️ **Voice** | Local STT (`voxtype`/`parakeet-redux`); optional Piper replies. |
 | 🔍 **Idle inquiry** | When the queue is empty, the manager measures the tree and asks at most three evidence-backed questions. |
-| 🩺 **Doctor** | One command checks binary, config, graph, units and bus membership. |
+| 🩺 **Doctor** | One command checks binary, config, graph, units and bus membership (when radio is installed). |
 
 ## What you get
 
@@ -80,6 +97,43 @@ are cut from the base branch.
 | `<project>/.omp/mcp.json` | this office's MCP entry (written by the installer, gitignored) |
 | `~/.config/zolly/<freq>/credentials` | token, allowed ids, founder handle and webhook secret — machine-local, never in the repo |
 | `~/.config/systemd/user/zolly@<freq>.service` | the Telegram listener for that project |
+
+## How it works
+
+The intelligence runs in **omp**. zolly is the control plane around it: it
+seats the agents, routes work, measures state, and enforces the review gate.
+
+```text
+founder → Zolly (manager) → foreman (team leader) → worker → reviewer → Zolly (close)
+```
+
+| Seat | Does work? | Owns |
+|---|---|---|
+| Zolly | small changes only | brief, routing, gates, close |
+| foreman | never | worktree, worker brief, monitoring, escalation |
+| worker | yes | the diff and `.agents/results/<id>.md` |
+| reviewer | only the merge | PASS/OBJECTION; the only door to `main` |
+
+State is git, not a database:
+
+| Artifact | Where | Why |
+|---|---|---|
+| Brief | `.agents/queue/<id>.md` | the task the worker receives |
+| Result | `.agents/results/<id>.md` on the task branch | what changed, how it was verified |
+| Code | `foreman/<id>` branch + worktree | isolated from `main` |
+| Merge | `main`, reviewer only | one auditable door |
+| Memory | `.agents/memory/` (committed) | survives a machine switch |
+
+`route`, `brief`, `curious`, `ponder`, `verify`, `close`, `gc` and `doctor` run
+without a model. The model does the work; the binary measures and gates it.
+
+### What zolly is not
+
+- Not a model or a coding harness. It orchestrates `omp`.
+- Not a hosted service. Your machine, your git remote, your credentials.
+- Not a sandbox. The rules are enforced by agents and by git/CI, not by the OS.
+- Not a replacement for branch protection. If the reviewer gate must hold
+  against a misbehaving agent, enforce it in GitHub and CI.
 
 ## Configuration
 
@@ -125,8 +179,9 @@ zolly             # boots the office: foreman + pr-reviewer, then the manager
 ```
 
 Bare `zolly` seats the office: it opens the foreman and pr-reviewer tabs in the
-project's herdr workspace (idempotent), joins them to the radio frequency, then
-starts `omp` with the manager persona (`@.agents/zolly/agent.md`). `zolly init`
+project's herdr workspace (idempotent), ensures one Radio view tab and joins
+them to the radio frequency when AgentRadio is installed, then starts `omp`
+with the manager persona (`@.agents/zolly/agent.md`). `zolly init`
 re-opens a seat that was closed. `zolly <command>` runs the CLI; bare `zolly`
 outside an office says so instead of seating.
 
@@ -244,15 +299,16 @@ when `ZOLLY_TELEGRAM_TOKEN` is set — systemd **yes** when credentials exist.
 only when a token is configured.
 
 The chat id is not a second thing to look up: the installer asks Telegram
-(`getUpdates`) for the chats that have messaged the bot and offers those ids,
-group chats excluded. `ZOLLY_ALLOWED_IDS` overrides the discovery; with no
-update yet (nobody has messaged the bot) the installer falls back to the prompt.
-`getUpdates` names every chat that has messaged the bot, so on a bot strangers
-can reach, set `ZOLLY_ALLOWED_IDS` explicitly rather than accepting the list.
-The same call records the founder's `@handle` as `ZOLLY_FOUNDER_USERNAME` — the
-manager prefixes a reply into a group with it, because only a mention notifies
-there; a DM already does. Pass `--founder` with `--yes`: `zolly doctor` fails on
-an office with no founder name.
+(`getUpdates`) for the private chats that have messaged the bot and offers those
+ids; group chats are excluded. `ZOLLY_ALLOWED_IDS` overrides the discovery; with
+no update yet (nobody has messaged the bot) the installer falls back to the
+prompt. `getUpdates` names every private chat that has messaged the bot, so on a
+bot strangers can reach, set `ZOLLY_ALLOWED_IDS` explicitly rather than
+accepting the list. The same call records the founder's `@handle` as
+`ZOLLY_FOUNDER_USERNAME`; it is kept for existing templates, but the manager now
+answers only in the private chat and ignores group/supergroup messages.
+Pass `--founder` with `--yes`: `zolly doctor` fails on an office with no founder
+name.
 
 **Pin a tag or commit.** Use the ref in the script URL and tell the installer to
 fetch the matching archive:
@@ -368,16 +424,34 @@ it.
 
 </details>
 
+## How zolly compares
+
+zolly is a repo-local control plane, not a hosted teammate product or a
+multi-harness desktop client. [COMPARISON.md](COMPARISON.md) compares it with
+Grok Bot, Cindy, Claude Code, Codex, OpenHands, Bernstein and the
+worktree-orchestrator field, including the gaps.
+
 ## Limitations
 
 - All offices on one machine run as the **same OS user**. The frequency is not
   an OS security boundary.
+- **The reviewer gate is procedural.** The reviewer is an agent following a
+  prompt. Use GitHub branch protection and required checks if the gate must hold
+  against a misbehaving agent.
+- **herdr has no authentication.** Any process running as the same OS user can
+  call it; the office is one trust domain, not a sandbox.
 - **One Telegram bot per office.** Two listeners on one token answer
   `409 Conflict`.
 - The listener is **loopback-only**. Webhook mode needs a public HTTPS endpoint;
   this kit does not terminate TLS.
 - Installation needs no commit, but the **first task** does: branches are cut
   from the base branch.
+- The office is Linux-first; the listener is systemd-specific. No Windows path
+  is documented.
+- **One radio view per office.** `zolly init` ensures one Radio view tab in the
+  office workspace. The installed Radio herdr plugin must skip linked
+  worktrees; otherwise `herdr worktree create` opens another view per worker.
+  A plugin update can overwrite that patch.
 - Plain `git` is the source of truth. The office does not invent a status that
   git does not show.
 
@@ -392,11 +466,14 @@ Skills are **real files**, never symlinks: two copies of the same skill drift
 apart, and only one is tracked, so a fresh clone loses it.
 
 Runtime state (`queue/`, `runs/`, `inbox/`, `worktrees/`, `events/`,
-`STATE.md`, …) is machine-local and gitignored. `.agents/results/` is the
+`state.md`, …) is machine-local and gitignored. `.agents/results/` is the
 exception: a worker commits its result file **on the task branch** so the
 reviewer can read it there; it is not committed to `main`. `.agents/memory/` is
 **committed on purpose** — it is the knowledge that has to survive a machine
 switch.
+
+`HANDOFF.md` is the chronological log: the installer writes it, `close-the-day`
+maintains it, and `recap` reads it from the tail.
 
 ## Tests
 
@@ -414,6 +491,7 @@ That runs the syntax checks, the unit tests below, and the MCP handshake.
 | `tests/test_memory.py` | secret refusal, supersession, confirm, retract, compact, the bound check |
 | `tests/test_mcp.py` | input bounds, diagnostics redaction, project-bound agent selection |
 | `tests/test_install.py` | fresh install, repeat refusal, force-preserves memory, frequency collisions, credential discovery, webhook bind selection |
+| `tests/test_load_lines.py` | every path in the `AGENTS.md` register exists; every rule, prompt and skill has a row |
 
 `memory` honours `MEMORY_DIR`, so the suite runs in a temp directory and never
 touches `.agents/memory/`. The MCP server has its own client:
@@ -432,6 +510,8 @@ zolly/
 ├── install.sh          # the installer
 ├── test.sh             # syntax + unit + MCP handshake
 ├── README.md           # this file
+├── LICENSE             # Apache-2.0
+├── COMPARISON.md       # how zolly compares with adjacent tools
 ├── tests/              # the kit's own tests
 ├── tool/               # the Rust crate — the one shared binary
 └── .agents/            # the template — the office kit, project-agnostic
@@ -445,10 +525,15 @@ source, so they use the shared binary.
 
 ## License
 
-No license file is included in this repository yet. Until one is added, the
-default copyright applies.
+Apache-2.0. See [LICENSE](LICENSE).
+
+Copyright 2026 the zolly authors.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you shall be licensed as Apache-2.0, without any
+additional terms or conditions.
 
 ## Contributing
 
 Issues and PRs are welcome. Open an issue before sending a large change so the
-design can be agreed first.
+design can be agreed first. Contributions are accepted under Apache-2.0.

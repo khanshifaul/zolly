@@ -165,7 +165,11 @@ def find_main_root():
     holds `.agents/` and `AGENTS.md`, else cwd. `zolly` itself takes its root
     from the cwd (main.rs:96), so we hand it one explicitly."""
     override = os.environ.get("ZOLLY_ROOT")
-    if override and os.path.isdir(os.path.join(override, ".agents")):
+    if (
+        override
+        and os.path.isdir(os.path.join(override, ".agents"))
+        and os.path.isfile(os.path.join(override, "AGENTS.md"))
+    ):
         return override
     d = os.getcwd()
     while True:
@@ -323,7 +327,7 @@ def zolly_say(text, wait_submit_ms=2000):
     working_before = is_working(screen_before)
 
     res = run(
-        [herdr_bin(), "agent", "prompt", AGENT, text],
+        [herdr_bin(), "agent", "prompt", AGENT, "--", text],
         timeout_s=PROMPT_TIMEOUT_S,
     )
     delivered = res["exit_code"] == 0 and not res["timed_out"]

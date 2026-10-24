@@ -129,6 +129,33 @@ class InstallTests(unittest.TestCase):
         self.assertNotEqual(second.returncode, 0)
         self.assertIn("already exists", second.stderr)
 
+    def test_symlinked_agents_directory_is_refused(self):
+        repo = self.make_repo("app")
+        outside = self.root / "outside"
+        outside.mkdir()
+        marker = outside / "keep.me"
+        marker.write_text("do not touch\n", encoding="utf-8")
+        os.symlink(outside, repo / ".agents")
+        result = self.install(repo, "--force")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is a symlink", result.stderr)
+        self.assertTrue(marker.is_file(), "the symlink target must be untouched")
+
+    def test_founder_newline_cannot_inject_a_config_key(self):
+        repo = self.make_repo("app")
+        result = self.install(
+            repo,
+            "--founder",
+            'evil"\nfrequency = "other',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
+        frequency_lines = [
+            line for line in config.splitlines() if line.startswith("frequency =")
+        ]
+        self.assertEqual(frequency_lines, ['frequency = "app"'])
+        self.assertIn('founder = "evil\\"frequency = \\"other"', config)
+
     def test_force_preserves_memory_and_keeps_a_backup(self):
         repo = self.make_repo("app")
         self.assertEqual(self.install(repo).returncode, 0)

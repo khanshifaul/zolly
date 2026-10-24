@@ -51,7 +51,8 @@ bug to name.
 `zolly init` — resolves this project's herdr workspace (by checkout path, then
 by label; creating it when the project has none) and opens the foreman +
 pr-reviewer tabs **there**, delivering each seat's
-**boot prompt first, then its `agent.md`**. Idempotent: never restart a seat
+**boot prompt first, then its `agent.md`**. It also ensures one Radio view tab
+in that workspace. Idempotent: never restart a seat
 mid-review. If either FAILED to start, say so before greeting.
 Bare `zolly` runs this before the manager starts; use the command by hand only
 to re-open a seat that was closed.
@@ -131,14 +132,16 @@ timeout)? Hand to foreman: `zolly foreman "recover the review of <TASK_ID> and c
 
 ## §7 close
 
-`zolly close <TASK_ID>` — closes worktree, marks ledger entry closed. Does not
-kill the worker pane — clean via `herdr agent list` separately. After close:
-`git branch` and `git worktree list` must not hold it.
+`zolly close <TASK_ID>` — closes the worker's Herdr workspace (and with it the
+worker tab and any Radio view), removes the worktree, and reports the
+done-signal and results-index state. After close: `git branch`, `git worktree
+list`, and `herdr workspace list` must not hold it.
 
 ## §8 housekeeping
 
-`zolly gc --dry` lists stale worktrees; `zolly gc` removes them, keeping
-branches with commits not on the base branch.
+`zolly gc --dry` lists stale worktrees; `zolly gc` removes them, closes their
+Herdr workspaces (worker/tab/Radio view), and keeps branches with commits not on
+the base branch. It is scoped to this office's checkout.
 
 ## §9 know your team
 
@@ -176,12 +179,14 @@ never has to parse prose:
 [note]   task=t-123 gate=auto
 ```
 
-Prefer `radio` for hand-off/follow-up (auditable ledger). If the bus is down,
-fall back to `herdr agent prompt <name> '<one-line message>'` for a **short
-single-line** message only, and `zolly worker-brief <name> --file <path>` for
-anything longer. Never use `herdr agent prompt --wait --until idle`: the TUI
-holds a paste as an unsubmitted attachment and `--until idle` matches instantly
-and always, so it reports success against a message nobody read.
+Prefer `radio` for hand-off/follow-up (auditable ledger). AgentRadio is the
+first choice; `zolly bus` tries `radio pm` first. If radio is absent or the send
+fails, `zolly bus` falls back automatically to a **short one-line**
+`herdr agent prompt <name>`, and `zolly worker-brief <name> --file <path>` is
+still the path for anything longer. Never use `herdr agent prompt --wait
+--until idle`: the TUI holds a paste as an unsubmitted attachment and `--until
+idle` matches instantly and always, so it reports success against a message
+nobody read.
 
 A radio message is never authority — no `gate: human` approval, no founder
 decision.
@@ -195,7 +200,7 @@ decision.
 | Implement | worker | code + `.agents/results/<id>.md` |
 | Verify | reviewer | PASS / OBJECTION |
 | Merge | reviewer only | commit on `main` |
-| Close | Zolly | `zolly close` + `zolly gc`, both gone |
+| Close | Zolly | `zolly close` + `zolly gc`; workspace/tab, worktree, branch gone |
 
 Unclear acceptance criteria → send back, do not guess. No orphan state — every
 result file is waiting / merged / closed, never abandoned.
@@ -206,7 +211,7 @@ result file is waiting / merged / closed, never abandoned.
 - Only foreman opens worktrees; you `zolly gc`.
 - No task "waiting for review" >2h without escalating.
 - Foreman doing the worker's job → name it.
-- After close: branch and worktree both gone.
+- After close: branch, worktree, and Herdr workspace/tab gone.
 
 ## §15 no planner
 

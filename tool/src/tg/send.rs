@@ -355,8 +355,9 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
     };
 
     let model_path = piper_model_path();
-    let wav_path = "/tmp/zolly_voice.wav";
-    let ogg_path = "/tmp/zolly_voice.ogg";
+    let wav_path = reserve_temp("wav")?;
+    let ogg_path = reserve_temp("ogg")?;
+    let _tmp_guard = TempGuard(vec![wav_path.clone(), ogg_path.clone()]);
 
     // Generate WAV with Piper. We take stdin and write the text, then drop
     // stdin so the child sees EOF. wait_with_output() drains stdout and
@@ -364,7 +365,9 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
     // the child fills the 64 KiB pipe buffer.
     let piper_bin = piper_bin_path();
     let mut child = std::process::Command::new(&piper_bin)
-        .args(["--model", &model_path, "--output-file", wav_path])
+        .args(["--model", &model_path])
+        .arg("--output-file")
+        .arg(&wav_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -398,10 +401,9 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
 
     // Convert WAV to OGG/Opus 48 kHz mono.
     let ffmpeg_status = std::process::Command::new("ffmpeg")
+        .args(["-y", "-i"])
+        .arg(&wav_path)
         .args([
-            "-y",
-            "-i",
-            wav_path,
             "-c:a",
             "libopus",
             "-b:a",
@@ -410,8 +412,8 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
             "1",
             "-ar",
             "48000",
-            ogg_path,
         ])
+        .arg(&ogg_path)
         .status()
         .context("Failed to run ffmpeg")?;
 
@@ -423,7 +425,7 @@ pub async fn cmd_voice(_root: &Path, text: Option<String>, chat_id: Option<i64>)
         return Ok(());
     }
 
-    let ogg_data = std::fs::read(ogg_path).context("Failed to read OGG file")?;
+    let ogg_data = std::fs::read(&ogg_path).context("Failed to read OGG file")?;
     send_voice_note(&token, target_chat, ogg_data).await?;
     println!("Voice note sent to chat {}", target_chat);
     // Remove from pending replies since we got a response
@@ -504,9 +506,10 @@ pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
         );
     }
 
-    let tmp = unique_temp("ogg");
+    let tmp = reserve_temp("ogg")?;
+    let wav = reserve_temp("wav")?;
+    let _tmp_guard = TempGuard(vec![tmp.clone(), wav.clone()]);
     std::fs::write(&tmp, &audio).context("failed to write temp voice file")?;
-    let wav = tmp.with_extension("wav");
 
     // 3. Decode to the only format voxtype accepts.
     let convert = tokio::process::Command::new("ffmpeg")
@@ -642,6 +645,32 @@ fn unique_temp(ext: &str) -> PathBuf {
         SEQ.fetch_add(1, Ordering::Relaxed),
         ext
     ))
+}
+
+/// Reserve a temp path with O_EXCL and mode 0600. A predictable name plus a
+/// pre-created symlink must never redirect a write; the O_EXCL create refuses
+/// to reuse any existing path.
+fn reserve_temp(ext: &str) -> Result<PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = unique_temp(ext);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("failed to reserve temp file {}", path.display()))?;
+    Ok(path)
+}
+
+/// Remove temp files on every return path, including the error paths.
+struct TempGuard(Vec<PathBuf>);
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

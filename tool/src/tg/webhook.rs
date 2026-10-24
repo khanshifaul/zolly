@@ -17,8 +17,10 @@ use reqwest::Client;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 
 use super::config::{api_url, get_allowed_ids, get_client, get_token, json_redacted, redact, send_redacted};
 use super::serve::{append_dead_letter, handle_update, Dispatch, LiveDispatch, ServeLock};
@@ -35,6 +37,14 @@ const MAX_BODY_BYTES: usize = 1 << 20; // 1 MiB
 
 /// Largest header block, same reasoning.
 const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// A client that opens a socket and never finishes its request must not hold
+/// a task forever. Ten seconds is far beyond Telegram's delivery time.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bound the number of live connection tasks; the listener sits behind a
+/// public TLS proxy and must not be a memory amplifier.
+const MAX_INFLIGHT: usize = 64;
 
 /// The one failure this command is expected to hit: `127.0.0.1:80` is a
 /// privileged port. Named deterministically so the error says how to fix it.
@@ -98,6 +108,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Read one HTTP/1.1 request off `stream`: headers up to `\r\n\r\n`, then
 /// `Content-Length` bytes of body. Bounded in both directions.
 async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+    let deadline = tokio::time::Instant::now() + READ_TIMEOUT;
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = [0u8; 4096];
 
@@ -108,7 +119,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
         if buf.len() > MAX_HEADER_BYTES {
             anyhow::bail!("header block exceeds {MAX_HEADER_BYTES} bytes");
         }
-        let n = stream.read(&mut chunk).await.context("read request headers")?;
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut chunk))
+            .await
+            .context("read request headers timed out")?
+            .context("read request headers")?;
         if n == 0 {
             anyhow::bail!("connection closed before the headers completed");
         }
@@ -141,7 +155,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
 
     let mut body = buf[header_end.min(buf.len())..].to_vec();
     while body.len() < content_length {
-        let n = stream.read(&mut chunk).await.context("read request body")?;
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut chunk))
+            .await
+            .context("read request body timed out")?
+            .context("read request body")?;
         if n == 0 {
             break;
         }
@@ -243,7 +260,12 @@ pub async fn run_listener(
     allowed_ids: Arc<Vec<i64>>,
     secret: Arc<String>,
 ) -> Result<()> {
+    let permits = Arc::new(Semaphore::new(MAX_INFLIGHT));
     loop {
+        let permit = Arc::clone(&permits)
+            .acquire_owned()
+            .await
+            .context("webhook connection limiter closed")?;
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {
@@ -259,6 +281,7 @@ pub async fn run_listener(
         let allowed_ids = Arc::clone(&allowed_ids);
         let secret = Arc::clone(&secret);
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(e) = handle_connection(stream, &*dispatch, &root, &allowed_ids, &secret).await
             {
                 eprintln!("webhook: connection from {peer} failed: {e}");

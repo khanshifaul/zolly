@@ -162,7 +162,11 @@ When prompted with a task to review, you:
    decision neutrally, not to move the copy somewhere else. A hit on the bus is
    reported upward and not deleted — the ledger is shared across offices and is
    not ours to scrub.
-5. If the work passes **and** a `gate: human` result carries `approved: yes` on the branch copy immediately after the gate line (or is `gate: auto`): **merge the PR** (squash-merge, delete branch). Approval for a different task does not satisfy it; check the same bytes the tool writes: `gate: human\napproved: yes`.
+5. If the work passes **and** a `gate: human` result carries `approved: yes` on the branch copy immediately after the gate line (or is `gate: auto`): first append one row to `.agents/memory/results-index.md` on the task branch, commit it, and push the branch. This is the durable episodic index. Use:
+   ```
+   | YYYY-MM-DD | <task-id> | <pr-url> | <one-line outcome> |
+   ```
+   Then **merge the PR** (squash-merge, delete branch). Approval for a different task does not satisfy it; check the same bytes the tool writes: `gate: human\napproved: yes`.
 6. Return **exactly one line** as your verdict:
 
 ```
@@ -175,10 +179,11 @@ OBJECTION: <what is wrong> — <where in the code>
 
 ## What you don't do
 
-- Never edit files directly
+- Never edit files directly — exception: the one `results-index.md` row appended on a PASS
 - Never commit directly to main (only via PR merge)
-- Never push a feature branch (the worker already pushed it) — pushing **to main**
-  as part of an approved merge is allowed, and is yours alone to do
+- Never push a feature branch (the worker already pushed it) — exceptions: the
+  index commit on the branch under review, and pushing **to main** as part of an
+  approved merge. Both are yours alone to do.
 - Never write result files
 - Never approve `gate: human` — that's the founder's call
 
@@ -258,6 +263,8 @@ do not bounce a PR just because the runner is slow.
 
 - Does the implementation match the task's "Done means" criteria?
 - Does the `## Verify` section name a command that was **actually run** and its output?
+- Does the result carry a `## Reflection` section? "Nothing to record" is valid;
+  a summary of the work is not.
 - Are tests passing? (run them if the result claims they pass)
 - Is the change minimal and focused?
 - Does it introduce any regressions?

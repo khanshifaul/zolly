@@ -139,15 +139,18 @@ fn git_ok(root: &Path, args: &[&str]) -> bool {
     )
 }
 
-/// The ref whose tree decides whether a task is merged. `origin/main` is the
-/// published integration branch — the reviewer records PASS, merges and
-/// pushes there, so a result file present on it is merged for real. Local
-/// `main` is the fallback for a repo without a remote (the test fixtures, a
-/// fresh local-only checkout). When neither resolves, nothing counts as
-/// merged: the conservative direction, because a gate wrongly retired is a
-/// gate masked, while a gate wrongly kept is only today's behaviour.
-fn integration_ref(root: &Path) -> Option<&'static str> {
-    ["origin/main", "main"]
+/// The ref whose tree decides whether a task is merged. The configured
+/// `remote/base_branch` is the published integration branch — the reviewer
+/// records PASS, merges and pushes there, so a result file present on it is
+/// merged for real. The local base branch is the fallback for a repo without
+/// a remote (the test fixtures, a fresh local-only checkout). When neither
+/// resolves, nothing counts as merged: the conservative direction, because a
+/// gate wrongly retired is a gate masked, while a gate wrongly kept is only
+/// today's behaviour.
+fn integration_ref(root: &Path) -> Option<String> {
+    let office = crate::office::Office::load(root.to_path_buf());
+    office
+        .integration_refs()
         .into_iter()
         .find(|r| git_ok(root, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]))
 }
@@ -200,10 +203,24 @@ pub(crate) fn result_gates(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
         covered.insert(name.clone());
-        classify_gate(root, refname, name, &content, &mut waiting, &mut historical);
+        classify_gate(
+            root,
+            refname.as_deref(),
+            name,
+            &content,
+            &mut waiting,
+            &mut historical,
+        );
     }
     for (name, content) in branch_results(root, &covered) {
-        classify_gate(root, refname, name, &content, &mut waiting, &mut historical);
+        classify_gate(
+            root,
+            refname.as_deref(),
+            name,
+            &content,
+            &mut waiting,
+            &mut historical,
+        );
     }
     Ok((waiting, historical))
 }
@@ -212,7 +229,7 @@ pub(crate) fn result_gates(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
 /// state decide; see `result_gates`.
 fn classify_gate(
     root: &Path,
-    refname: Option<&'static str>,
+    refname: Option<&str>,
     name: String,
     content: &str,
     waiting: &mut Vec<String>,

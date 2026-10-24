@@ -99,8 +99,9 @@ enum Commands {
     Close {
         task_id: String,
     },
-    /// Remove stale auto/* worktrees and their orphan branches.
-    /// Refuses to touch the main checkout. `--dry` prints what it would do.
+    /// Remove stale auto/* worktrees, close their Herdr workspaces, and delete
+    /// their orphan branches. Refuses to touch the main checkout or another
+    /// office's worktrees. `--dry` prints what it would do.
     Gc {
         #[arg(long)]
         dry: bool,
@@ -241,7 +242,7 @@ async fn main() -> Result<()> {
             task,
             gate,
             text,
-        } => bus_cmd(&handle, &kind, &task, gate.as_deref(), &text),
+        } => bus_cmd(&root, &handle, &kind, &task, gate.as_deref(), &text),
         Commands::Verify { task_id } => verify_cmd(&root, &task_id),
         Commands::Foreman { prompt, timeout_ms } => foreman(&herdr, &root, &prompt, timeout_ms),
         Commands::Reviewer { task_id, timeout_ms } => reviewer(&herdr, &root, &task_id, timeout_ms),
@@ -251,7 +252,7 @@ async fn main() -> Result<()> {
             timeout_ms,
         } => worker_brief(&herdr, &agent, file.as_deref(), timeout_ms),
         Commands::Close { task_id } => close(&herdr, &root, &task_id),
-        Commands::Gc { dry, prefix } => gc(&root, dry, &prefix),
+        Commands::Gc { dry, prefix } => gc(&herdr, &root, dry, &prefix),
         Commands::TelegramServe {
             webhook,
             bind,
@@ -518,6 +519,17 @@ fn radio_line(success: bool, stdout: &str, stderr: &str) -> String {
     if line.is_empty() { "no output".to_string() } else { line }
 }
 
+/// AgentRadio is the first choice. It is optional: a missing or failed `radio`
+/// falls back to a one-line `herdr agent prompt`, which is enough for the short
+/// messages `zolly bus` is meant to carry.
+fn radio_available() -> bool {
+    std::process::Command::new("radio")
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 /// Join `handle` to the office frequency on `pane`, before an agent exists in
 /// it, and print the outcome as one line.
 ///
@@ -532,6 +544,9 @@ fn radio_line(success: bool, stdout: &str, stderr: &str) -> String {
 /// each prints one line and returns: the seats must come up whether or not the
 /// bus does.
 fn radio_join(handle: &str, pane: &str, role: &str, frequency: &str) {
+    if !radio_available() {
+        return;
+    }
     let output = std::process::Command::new("radio")
         .args([
             "join",
@@ -591,6 +606,9 @@ fn inbox_ids(stdout: &str) -> Vec<u64> {
 /// shell. Every failure is reported in one line and swallowed: the seat must
 /// come up whether or not the bus does.
 fn radio_drain(office: &Office, handle: &str) {
+    if !radio_available() {
+        return;
+    }
     let scope = office.workspace();
     let read = |args: &[&str]| {
         std::process::Command::new("radio")
@@ -645,8 +663,22 @@ fn radio_drain(office: &Office, handle: &str) {
     }
 }
 
-fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
+/// Load an office and refuse to act when its frequency belongs to another
+/// checkout. This is the binary-side counterpart to the installer's
+/// `$CRED_ROOT/<freq>/project` ownership marker; a cloned repo can edit the
+/// tracked `frequency`, but it cannot edit the marker in `$HOME`.
+fn load_owned_office(root: &std::path::Path) -> Result<Office> {
     let office = Office::load(root.to_path_buf());
+    anyhow::ensure!(
+        office.owned(),
+        "office frequency '{}' belongs to another checkout — refusing to act on it",
+        office.frequency
+    );
+    Ok(office)
+}
+
+fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
+    let office = load_owned_office(root)?;
     let foreman = office.agent("foreman");
     let reviewer = office.agent("pr-reviewer");
     let foreman_label = format!("foreman@{}", office.frequency);
@@ -666,7 +698,6 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
 
     if has_foreman && has_reviewer {
         println!("Foreman and pr-reviewer already running");
-        return Ok(());
     }
 
     // The seats belong to the project's workspace, not to whichever workspace
@@ -676,6 +707,12 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
         .ensure_workspace(&office.root, &office.frequency)
         .context("Failed to resolve the office workspace")?;
     println!("Workspace: {}", workspace);
+    if let Err(e) = herdr.ensure_radio_view(&workspace) {
+        eprintln!("radio view: {e}");
+    }
+    if has_foreman && has_reviewer {
+        return Ok(());
+    }
 
     if !has_foreman || !has_reviewer {
         println!("Opening seats...");
@@ -1011,26 +1048,77 @@ fn envelope(kind: &str, task: &str, gate: Option<&str>, text: &str) -> Result<St
     Ok(format!("[{kind}] task={task} gate={gate}\n{text}"))
 }
 
+/// Candidate herdr agent names for a radio handle. The bus handle is the
+/// stable name; the herdr agent name carries the frequency (and shortens a
+/// worker id to fit herdr's cap).
+fn bus_candidates(root: &std::path::Path, handle: &str) -> Vec<String> {
+    let office = Office::load(root.to_path_buf());
+    match handle {
+        "zolly" | "foreman" | "pr-reviewer" => vec![office.agent(handle)],
+        _ if handle.starts_with("worker-") => {
+            office_worker_seat_names(root, &handle["worker-".len()..])
+        }
+        _ => vec![handle.to_string()],
+    }
+}
+
+/// Deliver a short one-line envelope through herdr when AgentRadio is absent
+/// or down. This is the fallback, not the first choice: `radio pm` is tried
+/// before this runs.
+fn bus_fallback(root: &std::path::Path, handle: &str, message: &str) -> Result<()> {
+    let line = one_line(message);
+    let mut last = String::new();
+    for name in bus_candidates(root, handle) {
+        match std::process::Command::new("herdr")
+            .args(["agent", "prompt", &name, "--", &line])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                println!("{message}");
+                eprintln!("bus: radio unavailable — delivered to {name} via herdr");
+                return Ok(());
+            }
+            Ok(out) => {
+                last = format!(
+                    "herdr agent prompt {name}: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Err(e) => last = format!("herdr agent prompt {name}: {e}"),
+        }
+    }
+    anyhow::bail!("radio unavailable and herdr fallback failed: {last}")
+}
+
 fn bus_cmd(
+    root: &std::path::Path,
     handle: &str,
     kind: &str,
     task: &str,
     gate: Option<&str>,
     text: &str,
 ) -> Result<()> {
+    load_owned_office(root)?;
     let message = envelope(kind, task, gate, text)?;
-    let output = std::process::Command::new("radio")
+    match std::process::Command::new("radio")
         .args(["pm", handle, &message])
         .output()
-        .context("Failed to run radio")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "radio pm failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    {
+        Ok(out) if out.status.success() => {
+            println!("{message}");
+            Ok(())
+        }
+        Ok(out) => {
+            let radio_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            bus_fallback(root, handle, &message)
+                .with_context(|| format!("radio pm failed: {radio_err}"))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bus_fallback(root, handle, &message)
+        }
+        Err(e) => bus_fallback(root, handle, &message)
+            .with_context(|| format!("radio pm failed: {e}")),
     }
-    println!("{message}");
-    Ok(())
 }
 
 fn parse_test_command(text: &str) -> Option<String> {
@@ -1080,7 +1168,21 @@ fn replace_section(document: &str, name: &str, body: &str) -> String {
     out
 }
 
+/// A task id is one path component, never `..` or a separator. Every caller
+/// that joins it into `.agents/worktrees` or `.agents/results` must reject
+/// anything else: a CLI typo or a hostile queue filename must not escape the
+/// office.
+fn safe_task_id(task_id: &str) -> bool {
+    let mut parts = std::path::Path::new(task_id).components();
+    matches!(parts.next(), Some(std::path::Component::Normal(_)))
+        && parts.next().is_none()
+        && !task_id.contains('\\')
+}
+
 fn verify_cmd(root: &std::path::Path, task_id: &str) -> Result<()> {
+    if !safe_task_id(task_id) {
+        anyhow::bail!("invalid task id '{task_id}' — one filename component, no '..' or separators");
+    }
     let worktree = root.join(".agents/worktrees").join(task_id);
     if !worktree.is_dir() {
         anyhow::bail!("no worktree at {}", worktree.display());
@@ -1144,11 +1246,11 @@ fn foreman(
     prompt: &str,
     timeout_ms: u64,
 ) -> Result<()> {
-    // Branch base discipline (change 2): a task branch cut from a local `main`
-    // that is behind origin/main carries unrelated work into its PR — PR #96
+    // Branch base discipline (change 2): a task branch cut from a local base
+    // that is behind its remote carries unrelated work into its PR — PR #96
     // carried 17 files instead of 2 for exactly this reason. Sync first.
     ensure_main_matches_origin(root)?;
-    let office = Office::load(root.to_path_buf());
+    let office = load_owned_office(root)?;
     let reply = herdr
         .agent_prompt_with_reply(&office.agent("foreman"), prompt, timeout_ms)
         .context("Failed to prompt foreman")?;
@@ -1162,7 +1264,7 @@ fn reviewer(
     task_id: &str,
     timeout_ms: u64,
 ) -> Result<()> {
-    let office = Office::load(root.to_path_buf());
+    let office = load_owned_office(root)?;
     let prompt = format!("Review task: {}", task_id);
     let reply = herdr
         .agent_prompt_with_reply(&office.agent("pr-reviewer"), &prompt, timeout_ms)
@@ -1251,12 +1353,10 @@ impl StepOutcome {
     }
 }
 
-/// Agent names a worker seat for `task_id` may carry.
-///
-/// The foreman names the seat `worker-<frequency>-<short-id>`, shortening the
-/// task id only when the rendered name would break herdr's 32-character cap.
-/// `worker-<task-id>` is the older form. `close_agent_tabs` skips a name no
-/// agent carries, so passing both is safe and keeps `close` idempotent.
+/// Agent names a worker seat for `task_id` may carry. This legacy helper is
+/// kept for the naming tests; production close/bus paths use
+/// `office_worker_seat_names`, which never returns the bare legacy name.
+#[cfg(test)]
 fn worker_seat_names(root: &std::path::Path, task_id: &str) -> Vec<String> {
     let frequency = crate::office::Office::load(root.to_path_buf()).frequency;
     let prefix = format!("worker-{frequency}-");
@@ -1270,6 +1370,20 @@ fn worker_seat_names(root: &std::path::Path, task_id: &str) -> Vec<String> {
     names
 }
 
+/// Worker names that are safe to close or message from this office. The herdr
+/// agent namespace is server-wide; a bare `worker-<task-id>` could match the
+/// same task id in another office. Return only the frequency-prefixed name:
+/// filtering the legacy bare name is not enough, because a task id that starts
+/// with the frequency (`zolly-fix`) renders a bare name that still has the
+/// prefix.
+fn office_worker_seat_names(root: &std::path::Path, task_id: &str) -> Vec<String> {
+    let frequency = crate::office::Office::load(root.to_path_buf()).frequency;
+    let prefix = format!("worker-{frequency}-");
+    let budget = 32usize.saturating_sub(prefix.chars().count());
+    let short_id: String = task_id.chars().take(budget).collect();
+    vec![format!("{prefix}{short_id}")]
+}
+
 /// `zolly close <task-id>` — the post-merge sweep. Idempotent, six steps, one
 /// printed line each plus a summary. It never fails on a worktree that is
 /// already gone: the self-repair path has none, and that is not an error.
@@ -1279,32 +1393,47 @@ fn worker_seat_names(root: &std::path::Path, task_id: &str) -> Vec<String> {
 /// one step that can clear it. A rebuild that fails is a failure of the sweep,
 /// not a warning: a merged tool change that will not build is a real defect.
 fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> Result<()> {
+    if !safe_task_id(task_id) {
+        anyhow::bail!("invalid task id '{task_id}' — one filename component, no '..' or separators");
+    }
     // Act on the checkout that holds `main`. This may be run from inside a task
     // worktree, and merging there would fast-forward the task branch instead.
     let repo = main_checkout(root);
+    let office = load_owned_office(&repo)?;
     // Guard: refuse to sweep main while it holds uncommitted tracked changes —
     // listing them by name so the reader sees exactly what blocks them, rather
     // than being told the refs "diverged" when they do not.
     check_main_clean(&repo)?;
     let branch = format!("foreman/{task_id}");
 
-    // 1/6 — local main follows the merge. Fast-forward only: this never creates
+    // 1/6 — local base follows the merge. Fast-forward only: this never creates
     // a commit and never pushes. `merge --ff-only`, deliberately not `pull`:
     // pull.rebase=true is set globally on this machine, so a pull dies on the
     // memory files the CLI keeps dirty.
-    let sync = sync_main(&repo);
+    let sync = sync_main(&repo, &office.base_branch, &office.remote);
     println!("1/6 sync      : {}", sync.outcome.line);
 
-    // 2/6 — the task branch, once its work is contained in origin/main.
-    let (mut branch_step, deferred) = close_branch(&repo, &branch);
+    // 2/6 — the task branch, once its work is contained in the remote base.
+    let (mut branch_step, deferred) =
+        close_branch(&repo, &branch, &office.base_branch, &office.remote);
     println!("2/6 branch    : {}", branch_step.line);
 
     // 3/6 — the worktree, if it is still there. Absent is a skip, not a failure.
     // The seat dies with it: a live pane whose cwd was just deleted is a zombie
     // that `herdr agent list` keeps counting (#12).
     let mut worktree = match herdr.worktree_close(&repo, task_id) {
-        Ok(Some(path)) => {
-            let mut step = StepOutcome::new(format!("removed {path}"), "removed", false);
+        Ok(Some(removed)) => {
+            let mut step =
+                StepOutcome::new(format!("removed {}", removed.path), "removed", false);
+            if let Some(workspace) = &removed.workspace_closed {
+                step.line.push_str(&format!("; workspace {workspace} closed"));
+            }
+            if let Some(error) = &removed.workspace_error {
+                step.line
+                    .push_str(&format!("; workspace NOT closed: {error}"));
+                step.token = "removed (workspace open)".into();
+                step.failed = true;
+            }
             if deferred {
                 // Step 2 could not delete the branch because this worktree held
                 // it; removing the worktree freed it.
@@ -1335,7 +1464,10 @@ fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> R
     // is reported but does not fail the sweep: herdr being unreachable must not
     // make `close` refuse to finish the rest (the worktree step already treats
     // it that way), and the line names the reason either way.
-    let seats = worker_seat_names(root, task_id);
+    // Close only this office's worker tab. The herdr agent namespace is
+    // server-wide; a bare `worker-<task-id>` fallback could match the same
+    // task id in another office. The frequency prefix is the boundary.
+    let seats = office_worker_seat_names(&repo, task_id);
     let seat_refs: Vec<&str> = seats.iter().map(String::as_str).collect();
     match herdr.close_agent_tabs(&seat_refs) {
         Ok(closed) if closed.is_empty() => {}
@@ -1347,7 +1479,8 @@ fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> R
     // 4/6 — the done-signal must be in git. A task without its result file in
     // the branch was never finished, whatever the queue status says.
     let signal = check_done_signal(&repo, task_id);
-    println!("4/6 done-signal: {}", signal.line);
+    let index = check_results_index(&repo, task_id);
+    println!("4/6 done-signal: {}; index: {}", signal.line, index.line);
 
     // 5/6 — deploy: rebuild the release binary when the merge touched the tool
     // source. The trigger is the merge itself — the path list between the two
@@ -1487,12 +1620,17 @@ fn check_main_clean(repo: &std::path::Path) -> Result<()> {
 }
 
 
-/// (local main sha, origin/main sha, commits main is ahead, commits behind).
-fn main_vs_origin(repo: &std::path::Path) -> Result<(String, String, u64, u64)> {
-    let head = git_out(repo, &["rev-parse", "main"])?.trim().to_string();
-    let remote = git_out(repo, &["rev-parse", "origin/main"])?.trim().to_string();
-    let ahead = gap_count(repo, "origin/main..main");
-    let behind = gap_count(repo, "main..origin/main");
+/// (local base sha, remote base sha, commits base is ahead, commits behind).
+fn main_vs_origin(
+    repo: &std::path::Path,
+    base: &str,
+    remote_name: &str,
+) -> Result<(String, String, u64, u64)> {
+    let base_ref = format!("{remote_name}/{base}");
+    let head = git_out(repo, &["rev-parse", base])?.trim().to_string();
+    let remote = git_out(repo, &["rev-parse", &base_ref])?.trim().to_string();
+    let ahead = gap_count(repo, &format!("{base_ref}..{base}"));
+    let behind = gap_count(repo, &format!("{base}..{base_ref}"));
     Ok((head, remote, ahead, behind))
 }
 
@@ -1505,34 +1643,50 @@ fn gap_count(repo: &std::path::Path, range: &str) -> u64 {
 }
 
 /// The refusal text names both shas and both counts — never "out of sync".
-fn main_gap_message(head: &str, remote: &str, ahead: u64, behind: u64, repo: &std::path::Path) -> String {
+fn main_gap_message(
+    head: &str,
+    remote: &str,
+    ahead: u64,
+    behind: u64,
+    repo: &std::path::Path,
+    base: &str,
+    remote_name: &str,
+) -> String {
     format!(
-        "refusing to dispatch: local main is not origin/main — main {} is {ahead} commit(s) ahead of and {behind} commit(s) behind origin/main {}; sync first with `git -C {} merge --ff-only origin/main`",
+        "refusing to dispatch: local {base} is not {remote_name}/{base} — {base} {} is {ahead} commit(s) ahead of and {behind} commit(s) behind {remote_name}/{base} {}; sync first with `git -C {} merge --ff-only {remote_name}/{base}`",
         short(head),
         short(remote),
         repo.display()
     )
 }
 
-/// Refuse to dispatch while `main != origin/main`, naming the exact gap.
+/// Refuse to dispatch while local base != remote base, naming the exact gap.
 fn ensure_main_matches_origin(root: &std::path::Path) -> Result<()> {
     let repo = main_checkout(root);
-    // Guard: refuse to dispatch onto a dirty main — name the offending files
+    let office = load_owned_office(&repo)?;
+    let base = &office.base_branch;
+    let remote_name = &office.remote;
+    // Guard: refuse to dispatch onto a dirty base — name the offending files
     // so the reader is not sent chasing ref topology that is perfectly
     // fast-forwardable.
     check_main_clean(&repo)?;
-    // Refresh origin/main so the comparison is against the real remote, not a
-    // stale remote-tracking ref. A failed fetch is not fatal — the last known
-    // origin/main still answers the question — but it must not pass silently.
-    if let Err(e) = git_out(&repo, &["fetch", "origin"]) {
-        eprintln!("warn: {e} — comparing main against the last known origin/main");
+    // Refresh the remote-tracking ref so the comparison is against the real
+    // remote, not a stale copy. A failed fetch is not fatal — the last known
+    // ref still answers the question — but it must not pass silently.
+    if let Err(e) = git_out(&repo, &["fetch", remote_name]) {
+        eprintln!(
+            "warn: {e} — comparing {base} against the last known {remote_name}/{base}"
+        );
     }
-    let (head, remote, ahead, behind) = main_vs_origin(&repo)
-        .context("cannot compare main to origin/main — refusing to dispatch")?;
+    let (head, remote, ahead, behind) = main_vs_origin(&repo, base, remote_name)
+        .with_context(|| format!("cannot compare {base} to {remote_name}/{base} — refusing to dispatch"))?;
     if head == remote {
         return Ok(());
     }
-    anyhow::bail!("{}", main_gap_message(&head, &remote, ahead, behind, &repo))
+    anyhow::bail!(
+        "{}",
+        main_gap_message(&head, &remote, ahead, behind, &repo, base, remote_name)
+    )
 }
 
 /// The result of step 1: its printed line, plus the `(before, after)` local
@@ -1544,19 +1698,21 @@ struct MainSync {
     shas: Option<(String, String)>,
 }
 
-/// 1/6 — make local `main` match the merge. Fast-forward only: never a commit,
-/// never a push. Returns the SHAs so the deploy step diffs the real merge, and
-/// an already-synced main yields `before == after` → an empty diff → no rebuild.
-fn sync_main(repo: &std::path::Path) -> MainSync {
+/// 1/6 — make local `base` match the merge. Fast-forward only: never a commit,
+/// never a push. `--autostash` carries local office-state edits (tracked
+/// `.agents/memory` files) across the merge instead of letting Git refuse it.
+/// Returns the SHAs so the deploy step diffs the real merge, and an
+/// already-synced base yields `before == after` → an empty diff → no rebuild.
+fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync {
     let head_branch = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "?".to_string());
-    if head_branch != "main" {
+    if head_branch != base {
         // Merging here would fast-forward whatever branch is checked out.
         return MainSync {
             outcome: StepOutcome::new(
                 format!(
-                    "{} is on '{head_branch}', not main — not synced",
+                    "{} is on '{head_branch}', not {base} — not synced",
                     repo.display()
                 ),
                 &format!("skipped (on {head_branch})"),
@@ -1565,13 +1721,13 @@ fn sync_main(repo: &std::path::Path) -> MainSync {
             shas: None,
         };
     }
-    if let Err(e) = git_out(repo, &["fetch", "origin"]) {
+    if let Err(e) = git_out(repo, &["fetch", remote_name]) {
         return MainSync {
             outcome: StepOutcome::new(format!("{e}"), "FAILED (fetch)", true),
             shas: None,
         };
     }
-    let (head, remote, ahead, behind) = match main_vs_origin(repo) {
+    let (head, remote, ahead, behind) = match main_vs_origin(repo, base, remote_name) {
         Ok(v) => v,
         Err(e) => {
             return MainSync {
@@ -1584,7 +1740,7 @@ fn sync_main(repo: &std::path::Path) -> MainSync {
         return MainSync {
             outcome: StepOutcome::new(
                 format!(
-                    "main {} == origin/main {} (up to date)",
+                    "{base} {} == {remote_name}/{base} {} (up to date)",
                     short(&head),
                     short(&remote)
                 ),
@@ -1595,11 +1751,12 @@ fn sync_main(repo: &std::path::Path) -> MainSync {
             shas: Some((head.clone(), head)),
         };
     }
-    match git_out(repo, &["merge", "--ff-only", "origin/main"]) {
+    let merge_ref = format!("{remote_name}/{base}");
+    match git_out(repo, &["merge", "--ff-only", "--autostash", &merge_ref]) {
         Ok(_) => MainSync {
             outcome: StepOutcome::new(
                 format!(
-                    "fast-forwarded main {} → {} (was {behind} behind, {ahead} ahead)",
+                    "fast-forwarded {base} {} → {} (was {behind} behind, {ahead} ahead)",
                     short(&head),
                     short(&remote)
                 ),
@@ -1760,11 +1917,17 @@ fn restart_token(paths: &[&str]) -> &'static str {
     }
 }
 
-/// 2/6 — delete `foreman/<task-id>` once its work is contained in origin/main.
-/// A branch holding commits that are not in the merge is kept and said so.
-/// Returns whether the delete had to be deferred to step 3, which removes the
-/// worktree that holds the branch checked out.
-fn close_branch(repo: &std::path::Path, branch: &str) -> (StepOutcome, bool) {
+/// 2/6 — delete `foreman/<task-id>` once its work is contained in the remote
+/// base branch. A branch holding commits that are not in the merge is kept and
+/// said so. Returns whether the delete had to be deferred to step 3, which
+/// removes the worktree that holds the branch checked out.
+fn close_branch(
+    repo: &std::path::Path,
+    branch: &str,
+    base: &str,
+    remote_name: &str,
+) -> (StepOutcome, bool) {
+    let base_ref = format!("{remote_name}/{base}");
     if !git_ok(
         repo,
         &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")],
@@ -1774,14 +1937,14 @@ fn close_branch(repo: &std::path::Path, branch: &str) -> (StepOutcome, bool) {
             false,
         );
     }
-    if !git_ok(repo, &["merge-base", "--is-ancestor", branch, "origin/main"]) {
-        let unmerged = git_out(repo, &["rev-list", "--count", &format!("origin/main..{branch}")])
+    if !git_ok(repo, &["merge-base", "--is-ancestor", branch, &base_ref]) {
+        let unmerged = git_out(repo, &["rev-list", "--count", &format!("{base_ref}..{branch}")])
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "?".to_string());
         return (
             StepOutcome::new(
-                format!("{branch} has {unmerged} commit(s) not in origin/main — KEPT"),
-                &format!("kept ({unmerged} not in main)"),
+                format!("{branch} has {unmerged} commit(s) not in {base_ref} — KEPT"),
+                &format!("kept ({unmerged} not in base)"),
                 false,
             ),
             false,
@@ -1790,7 +1953,7 @@ fn close_branch(repo: &std::path::Path, branch: &str) -> (StepOutcome, bool) {
     match git_out(repo, &["branch", "-D", branch]) {
         Ok(_) => (
             StepOutcome::new(
-                format!("{branch} contained in origin/main — deleted"),
+                format!("{branch} contained in {base_ref} — deleted"),
                 "deleted",
                 false,
             ),
@@ -1801,7 +1964,7 @@ fn close_branch(repo: &std::path::Path, branch: &str) -> (StepOutcome, bool) {
             if reason.contains("used by worktree") || reason.contains("checked out") {
                 (
                     StepOutcome::new(
-                        format!("{branch} contained in origin/main — held by a worktree, delete deferred to step 3"),
+                        format!("{branch} contained in {base_ref} — held by a worktree, delete deferred to step 3"),
                         "deferred to step 3",
                         false,
                     ),
@@ -1811,6 +1974,33 @@ fn close_branch(repo: &std::path::Path, branch: &str) -> (StepOutcome, bool) {
                 (StepOutcome::new(reason, "FAILED (delete)", true), false)
             }
         }
+    }
+}
+
+/// The reviewer's one-row index entry: visible, never a close blocker.
+fn check_results_index(repo: &std::path::Path, task_id: &str) -> StepOutcome {
+    let path = ".agents/memory/results-index.md";
+    let Ok(content) = std::fs::read_to_string(repo.join(path)) else {
+        return StepOutcome::new(
+            format!("WARN {path} is missing — reviewer did not append the row"),
+            "WARN (no index)",
+            false,
+        );
+    };
+    let found = content.lines().any(|line| {
+        line.starts_with('|')
+            && line
+                .split('|')
+                .any(|cell| cell.trim() == task_id)
+    });
+    if found {
+        StepOutcome::new(format!("{path} has {task_id}"), "ok (indexed)", false)
+    } else {
+        StepOutcome::new(
+            format!("WARN {path} has no row for {task_id} — reviewer missed the index"),
+            "WARN (not indexed)",
+            false,
+        )
     }
 }
 
@@ -1871,7 +2061,12 @@ fn check_done_signal(repo: &std::path::Path, task_id: &str) -> StepOutcome {
 /// touched: its worktree path equals the repo root and is skipped by
 /// construction. Every branch is checked for unique commits first — a
 /// branch with work not on main is kept and reported, never force-deleted.
-fn gc(root: &std::path::Path, dry: bool, prefix: &str) -> Result<()> {
+fn gc(
+    herdr: &herdr::HerdrClient,
+    root: &std::path::Path,
+    dry: bool,
+    prefix: &str,
+) -> Result<()> {
     let output = std::process::Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(root)
@@ -1899,10 +2094,14 @@ fn gc(root: &std::path::Path, dry: bool, prefix: &str) -> Result<()> {
         }
     }
 
-    let repo_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let repo_root = main_checkout(root)
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf());
+    let base = Office::load(root.to_path_buf()).base_branch;
     let mut removed = 0usize;
     let mut kept_dirty = Vec::new();
     let mut branches_deleted = 0usize;
+    let mut workspace_failures = 0usize;
 
     for (path, branch) in targets {
         let canon = std::path::Path::new(&path)
@@ -1916,17 +2115,33 @@ fn gc(root: &std::path::Path, dry: bool, prefix: &str) -> Result<()> {
             continue;
         }
 
-        // Refuse to remove a branch that has commits not on main.
+        // Refuse to remove a branch unless git proves it is contained in the
+        // configured base branch. A failed rev-list is not proof of merge.
         let unique = std::process::Command::new("git")
-            .args(["rev-list", "--count", &format!("main..{}", branch)])
+            .args(["rev-list", "--count", &format!("{base}..{branch}")])
             .current_dir(root)
             .output();
-        let has_unique = unique
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
-            .map(|n| n > 0)
-            .unwrap_or(false);
-        if has_unique {
+        let has_unique = match unique {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()
+            }
+            Ok(o) => {
+                eprintln!(
+                    "gc: cannot compare {branch} with {base}: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+                None
+            }
+            Err(e) => {
+                eprintln!("gc: cannot compare {branch} with {base}: {e}");
+                None
+            }
+        };
+        let Some(has_unique) = has_unique else {
+            kept_dirty.push(branch);
+            continue;
+        };
+        if has_unique > 0 {
             kept_dirty.push(branch);
             continue;
         }
@@ -1937,8 +2152,11 @@ fn gc(root: &std::path::Path, dry: bool, prefix: &str) -> Result<()> {
             continue;
         }
 
+        // Resolve the workspace before removing the checkout: after the path
+        // is gone, the herdr row cannot be matched by path.
+        let workspace = herdr.workspace_for_worktree_path(&repo_root, std::path::Path::new(&path));
         let rm = std::process::Command::new("git")
-            .args(["worktree", "remove", "--force", &path])
+            .args(["worktree", "remove", &path])
             .current_dir(root)
             .output()
             .context("Failed to run git worktree remove")?;
@@ -1946,11 +2164,21 @@ fn gc(root: &std::path::Path, dry: bool, prefix: &str) -> Result<()> {
             eprintln!(
                 "failed to remove worktree {}: {}",
                 path,
-                String::from_utf8_lossy(&rm.stderr)
+                String::from_utf8_lossy(&rm.stderr).trim()
             );
+            kept_dirty.push(branch);
             continue;
         }
         removed += 1;
+        if let Some(workspace) = workspace {
+            match herdr.workspace_close(&workspace) {
+                Ok(()) => println!("closed workspace {} for {}", workspace, path),
+                Err(e) => {
+                    eprintln!("failed to close workspace for {}: {}", path, e);
+                    workspace_failures += 1;
+                }
+            }
+        }
 
         let bd = std::process::Command::new("git")
             .args(["branch", "-D", &branch])
@@ -1987,6 +2215,12 @@ fn gc(root: &std::path::Path, dry: bool, prefix: &str) -> Result<()> {
         for b in &kept_dirty {
             println!("  kept: {}", b);
         }
+    }
+    if workspace_failures > 0 {
+        anyhow::bail!(
+            "gc: {} workspace(s) could not be closed — the worktrees were removed",
+            workspace_failures
+        );
     }
     Ok(())
 }
@@ -2112,6 +2346,22 @@ fn short_sha(sha: &str) -> String {
 fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
     let mut checks: Vec<Check> = Vec::new();
     let office = Office::load(root.to_path_buf());
+    if office.owned() {
+        checks.push(Check {
+            name: "office-ownership",
+            ok: true,
+            detail: format!("frequency '{}' is owned by this checkout", office.frequency),
+        });
+    } else {
+        checks.push(Check {
+            name: "office-ownership",
+            ok: false,
+            detail: format!(
+                "frequency '{}' is owned by another checkout — config.toml was changed after install",
+                office.frequency
+            ),
+        });
+    }
     let tool_dir = root.join(".agents/zolly/tool");
 
     // 1. Binary freshness. When the tool source sits in this office, compare
@@ -2313,11 +2563,19 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
         });
     }
 
-    // 5. Token-source drift: the systemd unit reads ~/.config/zolly/credentials,
-    // shell commands fall back to .agents/zolly/.env. If both define a
-    // value and they disagree, the serve bot and a shell-run bot can be
-    // different bots — a real trap, so this is a failure, not a warning.
-    let shell_env = read_env_file(&root.join(".agents/zolly/.env"));
+    // 5. Token-source drift: the systemd unit reads
+    // ~/.config/zolly/credentials; shell commands inherit the process
+    // environment (project-tree `.env` files are no longer read). If both
+    // define a value and they disagree, the serve bot and a shell-run bot can
+    // be different bots — a real trap, so this is a failure, not a warning.
+    let mut shell_env = std::collections::HashMap::new();
+    for key in ["ZOLLY_TELEGRAM_TOKEN", "ZOLLY_ALLOWED_IDS"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                shell_env.insert(key.to_string(), value);
+            }
+        }
+    }
     let creds_path = dirs::home_dir()
         .unwrap_or_default()
         .join(".config/zolly")
@@ -2328,7 +2586,10 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
     for key in ["ZOLLY_TELEGRAM_TOKEN", "ZOLLY_ALLOWED_IDS"] {
         if let (Some(a), Some(b)) = (shell_env.get(key), creds_env.get(key)) {
             if a != b {
-                drift.push(format!("{} differs between .agents/zolly/.env and ~/.config/zolly/credentials", key));
+                drift.push(format!(
+                    "{} differs between the process environment and ~/.config/zolly/credentials",
+                    key
+                ));
             }
         }
     }
@@ -2395,48 +2656,129 @@ fn gather_checks(root: &std::path::Path) -> Result<Vec<Check>> {
     }
 
     // 7. Seat on the bus: every office seat must have a live handle on this
-    //    office's frequency. A silent join failure is exactly why L-0019 went
-    //    unnoticed all day. Query the radio ledger directly (the doctor runs
-    //    outside any pane, so `radio handles` cannot see the frequency).
-    let radio_home = std::env::var("RADIO_HOME").unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join(".local/share/herdr-radio/radio.db"))
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share/herdr-radio/radio.db"))
-            .to_string_lossy().to_string()
-    });
+    //    office's frequency. Radio is optional: a missing CLI, ledger or
+    //    sqlite3 is a skipped check, not a broken office.
+    let radio_state_dir = std::env::var("RADIO_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share/herdr-radio")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".local/share/herdr-radio"));
+    let radio_db = radio_state_dir.join("radio.db");
+    let radio_db_str = radio_db.to_string_lossy().to_string();
     let workspace = office.workspace();
     let seats: Vec<&str> = SEAT_HANDLES.to_vec();
-    let mut missing_seats: Vec<String> = Vec::new();
-    for seat in &seats {
-        let out = std::process::Command::new("sqlite3")
-            .args([
-                &radio_home,
-                &format!("SELECT name FROM handles WHERE workspace='{workspace}' AND name='{seat}';"),
-            ])
-            .output();
-        let present = match out {
-            Ok(o) => {
-                let txt = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                !txt.is_empty()
-            }
-            Err(_) => false,
+    let radio_installed = std::process::Command::new("radio")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let ledger_exists = radio_db.is_file();
+    let sqlite_available = std::process::Command::new("sqlite3")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !radio_installed || !ledger_exists || !sqlite_available {
+        let detail = if !radio_installed {
+            "radio not installed — optional"
+        } else if !ledger_exists {
+            "radio ledger absent — optional"
+        } else {
+            "sqlite3 not installed — bus check skipped"
         };
-        if !present {
-            missing_seats.push(format!("seat {seat} is not on the bus"));
-        }
-    }
-    if missing_seats.is_empty() {
         checks.push(Check {
             name: "seats-on-bus",
             ok: true,
-            detail: format!("all {} office seats joined on {}", seats.len(), workspace),
+            detail: detail.into(),
         });
     } else {
+        let mut missing_seats: Vec<String> = Vec::new();
+        for seat in &seats {
+            let out = std::process::Command::new("sqlite3")
+                .args([
+                    &radio_db_str,
+                    &format!("SELECT name FROM handles WHERE workspace='{workspace}' AND name='{seat}';"),
+                ])
+                .output();
+            let present = match out {
+                Ok(o) => {
+                    let txt = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    !txt.is_empty()
+                }
+                Err(_) => false,
+            };
+            if !present {
+                missing_seats.push(format!("seat {seat} is not on the bus"));
+            }
+        }
+        if missing_seats.is_empty() {
+            checks.push(Check {
+                name: "seats-on-bus",
+                ok: true,
+                detail: format!("all {} office seats joined on {}", seats.len(), workspace),
+            });
+        } else {
+            checks.push(Check {
+                name: "seats-on-bus",
+                ok: false,
+                detail: missing_seats.join("; "),
+            });
+        }
+    }
+
+    // 8. Radio view leakage: a Radio dashboard belongs in the primary office
+    //    workspace, not in each linked-worktree workspace. Only worktrees whose
+    //    repo root is this office are inspected; another office is invisible.
+    let client = herdr::HerdrClient::new(root.to_path_buf());
+    let linked = client.linked_worktree_workspaces(root);
+    if !radio_installed || linked.is_empty() {
         checks.push(Check {
-            name: "seats-on-bus",
-            ok: false,
-            detail: missing_seats.join("; "),
+            name: "radio-view",
+            ok: true,
+            detail: if !radio_installed {
+                "radio not installed — optional".into()
+            } else {
+                "no linked worktrees".into()
+            },
         });
+    } else {
+        let mut leaked: Vec<String> = Vec::new();
+        let mut inspect_error: Option<String> = None;
+        for (workspace, path) in &linked {
+            match client.pane_list_for_workspace(workspace) {
+                Ok(panes) => {
+                    if panes
+                        .iter()
+                        .any(|pane| std::path::Path::new(&pane.cwd) == radio_state_dir)
+                    {
+                        leaked.push(format!("{workspace} ({path})"));
+                    }
+                }
+                Err(e) => inspect_error = Some(e.to_string()),
+            }
+        }
+        if let Some(error) = inspect_error {
+            checks.push(Check {
+                name: "radio-view",
+                ok: true,
+                detail: format!("cannot inspect panes: {error}"),
+            });
+        } else if leaked.is_empty() {
+            checks.push(Check {
+                name: "radio-view",
+                ok: true,
+                detail: "one Radio view per office".into(),
+            });
+        } else {
+            checks.push(Check {
+                name: "radio-view",
+                ok: false,
+                detail: format!(
+                    "Radio view in linked worktree(s): {} — patch the Radio workspace.created hook to skip linked worktrees",
+                    leaked.join(", ")
+                ),
+            });
+        }
     }
 
     Ok(checks)
@@ -2484,6 +2826,18 @@ fn doctor(root: &std::path::Path, json: bool) -> Result<()> {
 #[cfg(test)]
 mod intelligence_tests {
     use super::*;
+
+    #[test]
+    fn task_ids_are_one_component() {
+        assert!(safe_task_id("t-123"));
+        assert!(safe_task_id("auto-atlas-1"));
+        assert!(!safe_task_id(""));
+        assert!(!safe_task_id("."));
+        assert!(!safe_task_id(".."));
+        assert!(!safe_task_id("../other"));
+        assert!(!safe_task_id("a/b"));
+        assert!(!safe_task_id("a\\b"));
+    }
 
     #[test]
     fn small_fix_is_small() {
@@ -2612,7 +2966,15 @@ mod close_tests {
     fn main_gap_names_both_counts_and_both_shas() {
         // The refusal has to name the exact gap, so a reader can act without
         // asking. Both shas, both counts, and the command that fixes it.
-        let msg = main_gap_message("4c1a74b2aaaaaaaa", "452800febbbbbbbb", 3, 17, Path::new("/repo"));
+        let msg = main_gap_message(
+            "4c1a74b2aaaaaaaa",
+            "452800febbbbbbbb",
+            3,
+            17,
+            Path::new("/repo"),
+            "main",
+            "origin",
+        );
         assert!(msg.contains("main 4c1a74b2"), "{msg}");
         assert!(msg.contains("origin/main 452800fe"), "{msg}");
         assert!(msg.contains("3 commit(s) ahead"), "{msg}");
@@ -3105,6 +3467,13 @@ mod seat_tests {
         let names = worker_seat_names(&root, "t-project-truths");
         assert_eq!(names[0], "worker-freq-t-project-truths");
         assert!(names.contains(&"worker-t-project-truths".to_string()));
+        let scoped = office_worker_seat_names(&root, "t-project-truths");
+        assert_eq!(scoped, vec!["worker-freq-t-project-truths"]);
+
+        // A task id beginning with the frequency renders a bare name that also
+        // starts with `worker-<freq>-`; the scoped path must not return it.
+        let scoped = office_worker_seat_names(&root, "freq-fix");
+        assert_eq!(scoped, vec!["worker-freq-freq-fix"]);
 
         // A long task id: the prefix is intact and the rendered name hits the cap.
         let names = worker_seat_names(&root, "t-a-twenty-character-task-id");

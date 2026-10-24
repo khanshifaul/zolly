@@ -6,9 +6,13 @@
 #   memory retract <id> [--promoted-to <file>]
 #   memory read  [<decision|learning|current|archive|all>]
 #   memory search <terms>
+#   memory log <id>
 #   memory archive
 #   memory compact [<id>...]
-#   memory check
+#   memory check               # counts, 90% trim, bound + secret scan
+#
+# Trust: `confirm` is a workflow convention, not a cryptographic gate. A
+# process running as the same OS user can edit the store directly.
 #
 # Design: specs/agents/session-memory.spec.md
 #
@@ -39,7 +43,21 @@ REPO="$(cd "$HERE/../.." && pwd)"
 
 # Parse --agent flag FIRST so MEMORY_DIR can use it.
 case "${1:-}" in
-  --agent) shift; [ $# -gt 0 ] || die "--agent needs a name"; MEMORY_AGENT="$1"; shift ;;
+  --agent)
+    shift
+    if [ $# -eq 0 ]; then
+      echo "memory: --agent needs a name" >&2
+      exit 1
+    fi
+    MEMORY_AGENT="$1"
+    shift
+    case "$MEMORY_AGENT" in
+      ""|.|..|*/*|*\\*)
+        echo "memory: --agent must be one path component, got '$MEMORY_AGENT'" >&2
+        exit 1
+        ;;
+    esac
+    ;;
 esac
 
 # MEMORY_DIR exists so memory-test can sandbox into a temp dir instead of
@@ -96,10 +114,22 @@ SECRET_FLAG='(^|[^A-Za-z0-9])[0-9a-f]{64}([^A-Za-z0-9]|$)'
 
 # scan_secrets <text>; returns 2 and prints a reason on a blocking match.
 scan_secrets() {
-  local text="$1" f="$WORK/scan"
+  local text="$1" f
   mkdir -p "$WORK" 2>/dev/null
-  printf '%s' "$text" >"$f" 2>/dev/null || return 0
+  # A fixed `$WORK/scan` was shared by every process in the office; two
+  # concurrent writers could overwrite it between printf and grep, letting an
+  # unscanned secret through. Each scan gets its own file.
+  f=$(mktemp "$WORK/scan.XXXXXX" 2>/dev/null) || {
+    echo "memory: cannot create a secret-scan temp file — refusing the write." >&2
+    return 2
+  }
+  printf '%s' "$text" >"$f" 2>/dev/null || {
+    rm -f "$f"
+    echo "memory: cannot write a secret-scan temp file — refusing the write." >&2
+    return 2
+  }
   if grep -Eq "$SECRET_BLOCK" "$f" 2>/dev/null; then
+    rm -f "$f"
     {
       echo "memory: REFUSING WRITE — text matches a credential pattern."
       echo "        A memory entry records WHERE a secret lives, never its value."
@@ -110,6 +140,7 @@ scan_secrets() {
   if grep -Eq "$SECRET_FLAG" "$f" 2>/dev/null; then
     echo "memory: WARNING — text contains a 64-char hex string; check it is not a token." >&2
   fi
+  rm -f "$f"
   return 0
 }
 
@@ -822,8 +853,44 @@ cmd_archive() {
 }
 
 # ── check ─────────────────────────────────────────────────────────────────────
+# One command for observability, maintenance and the secret gate.
+#
+# At 90% of a kind's bound, roll the oldest entries into the archive until that
+# kind is below 90%. The archive is still searchable, so this is a live-window
+# trim, not data loss. Then report bytes and scan the live files for secrets.
 cmd_check() {
-  local rc=0 bytes f scanrc
+  local rc=0 bytes f kind n bound pct oldest scanrc
+  # `check` can archive below, so it is a writer and must hold the same lock
+  # as add/archive. A read-only fast path here raced with a concurrent add and
+  # could archive from a stale count.
+  acquire_lock || return 1
+  bytes=$(live_bytes)
+
+  for kind in decision learning current; do
+    f="$(file_for_kind "$kind")"
+    n=$(count_entries "$f"); n="${n:-0}"
+    bound="$(bound_for_kind "$kind")"
+    pct=$(( n * 100 / bound ))
+    printf '%s: %s/%s (%s%%)\n' "$kind" "$n" "$bound" "$pct"
+    if [ "$pct" -ge 90 ] && [ "$n" -gt 0 ]; then
+      oldest=$(grep -oE '^## [DLC]-[0-9]{4}' "$f" 2>/dev/null | sed 's/^## //' | head -1)
+      printf '  action: %s at %s/%s — rolling oldest entry%s\n' \
+        "$kind" "$n" "$bound" "${oldest:+ ($oldest)}"
+      while [ "$n" -gt 0 ] && [ "$pct" -ge 90 ]; do
+        ENFORCE_KEEP=$((n - 1))
+        if ! enforce_bound "$kind"; then
+          unset ENFORCE_KEEP
+          rc=1
+          break
+        fi
+        unset ENFORCE_KEEP
+        n=$(count_entries "$f"); n="${n:-0}"
+        pct=$(( n * 100 / bound ))
+      done
+      printf '  after: %s %s/%s (%s%%)\n' "$kind" "$n" "$bound" "$pct"
+    fi
+  done
+
   bytes=$(live_bytes)
   if [ "$bytes" -gt "$BUDGET_BYTES" ]; then
     echo "memory: BOUND EXCEEDED — live files total ${bytes}B, budget is ${BUDGET_BYTES}B." >&2
@@ -832,7 +899,11 @@ cmd_check() {
     rc=3
   else
     info "live size ${bytes}B / ${BUDGET_BYTES}B budget — OK"
+    if [ "$bytes" -ge $((BUDGET_BYTES * 9 / 10)) ]; then
+      echo "memory: warning — byte budget is at or above 90%; run 'memory compact' if retracted bodies remain." >&2
+    fi
   fi
+
   for f in "$DECISIONS" "$LEARNINGS" "$CURRENT"; do
     [ -f "$f" ] || continue
     scanrc=0
@@ -843,6 +914,51 @@ cmd_check() {
     fi
   done
   return $rc
+}
+
+# ── log ───────────────────────────────────────────────────────────────────────
+# Show the requested entry. Its own `Supersedes:` and `Promoted to:` lines are
+# included, but a `Supersedes:` line names the predecessor; it does not print
+# the predecessor's body. Entries that supersede this id are printed too (one
+# hop forward), so `log D-0001` shows D-0002. Run `log <predecessor>` to follow
+# back, one hop at a time.
+cmd_log() {
+  local id="${1:-}" found=0 f hits
+  [ -n "$id" ] || die "usage: memory log <id>"
+  for f in "$DECISIONS" "$LEARNINGS" "$CURRENT" "$ARCHIVE"/*.md; do
+    [ -f "$f" ] || continue
+    hits=$(awk -v id="$id" '
+      function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+      function flush() {
+        if (hdr == "") return
+        if (eid == id || sup == id) {
+          print hdr
+          if (body != "") printf "%s", body
+          if (sup != "") print "Supersedes: " sup
+          if (promos != "") printf "%s", promos
+          print ""
+          found = 1
+        }
+        hdr = ""; eid = ""; body = ""; sup = ""; promos = ""
+      }
+      /^## [DLC]-[0-9][0-9][0-9][0-9] \|/ {
+        flush()
+        hdr = $0
+        split($0, p, "|")
+        eid = trim(p[1]); sub(/^##[ \t]+/, "", eid); eid = trim(eid)
+        next
+      }
+      /^Supersedes: / { sup = $0; sub(/^Supersedes: /, "", sup); next }
+      /^Promoted to: / { promos = promos $0 "\n"; next }
+      { if (hdr != "") body = body $0 "\n" }
+      END { flush(); if (!found) exit 1 }
+    ' "$f")
+    if [ -n "$hits" ]; then
+      printf '== %s ==\n%s\n' "$(basename "$f")" "$hits"
+      found=1
+    fi
+  done
+  [ "$found" -eq 1 ] || die "no entry $id (ids look like D-0001, L-0001, C-0001)"
 }
 
 cmd_search() {
@@ -868,9 +984,10 @@ case "${1:-}" in
   retract) shift; cmd_retract "$@" ;;
   read)    shift; cmd_read "$@" ;;
   search)  shift; cmd_search "$@" ;;
+  log)     shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   compact) shift; cmd_compact "$@" ;;
   check)   shift; cmd_check "$@" ;;
-  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "usage: memory [--agent <name>] <add|confirm|retract|read|search|archive|compact|check>   (see 'memory --help')" ;;
+  -h|--help|help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "usage: memory [--agent <name>] <add|confirm|retract|read|search|log|archive|compact|check>   (see 'memory --help')" ;;
 esac

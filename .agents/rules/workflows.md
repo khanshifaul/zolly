@@ -58,8 +58,11 @@ Run `zolly route "<instruction>"` first: it prints SMALL or LARGE with the words
 that decided it; override only with a stated reason. The classification table
 lives in exactly one place:
 `.agents/prompts/task_triage.md`. Read it; do not carry a second copy here.
-The "large" threshold is a property of the project, not of the office: read it
-from `rules/project.md` → **Size thresholds**.
+
+`route` is a **fixed instruction heuristic** (45 words, 3 paths, and its keyword
+lists) — it is a first pass, not the project's change-size threshold. The
+project's **Size thresholds** in `rules/project.md` govern how the foreman and
+worker scope a change; they are not read by `zolly route`.
 
 Two rules that hold regardless of the table:
 
@@ -92,8 +95,9 @@ Below ~20 items, or a question needing cross-item reasoning, read directly.
 2. Read the task. If it says to redo something that already stands, do not.
 3. Do the work. Do not commit to `{{BASE_BRANCH}}`; work on the task branch.
 4. Write `.agents/results/<id>.md` with `files_changed`, `verify` (command +
-   result), `commit` (sha or none), and `blockers`, in the format
-   `rules/result-contract.md` fixes. **A task without a result file is
+   result), `commit` (sha or none), `blockers`, and `reflection` (the answer to
+   `.agents/prompts/post_task_reflect.md`; "nothing to record" is valid), in the
+   format `rules/result-contract.md` fixes. **A task without a result file is
    unfinished**, whatever the queue status says.
 5. Commit the result file on the task branch, push the branch, and open the PR
    (`gh pr create --base {{BASE_BRANCH}} --head foreman/<id>`). The reviewer
@@ -104,10 +108,15 @@ Below ~20 items, or a question needing cross-item reasoning, read directly.
 ## Reviewing (reviewer)
 
 Verdict is **PASS** or a specific objection. Never edit files, never write result
-files, never push a feature branch. On PASS the reviewer squash-merges the PR
-into `main` and may push to `main` while doing it — that is the only door to
-`main` (founder decision, 2026-10-12). No other agent merges or pushes to
-`main`.
+files, never push a feature branch — the one exception is the
+`results-index.md` row appended on a PASS, committed and pushed on the branch
+under review. On PASS the reviewer squash-merges the PR into `main` and may push
+to `main` while doing it — that is the only door to `main` (founder decision,
+2026-10-12). No other agent merges or pushes to `main`.
+
+On PASS, append one row to `.agents/memory/results-index.md` on the task branch
+before merging: `| YYYY-MM-DD | <task-id> | <pr-url> | <one-line outcome> |`.
+Commit it, push the branch, then merge.
 
 Check that the diff actually does what `.agents/results/<id>.md` claims, that
 the diff matches the task, and that no file outside the task's scope is swept

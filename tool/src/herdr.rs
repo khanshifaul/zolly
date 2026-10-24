@@ -139,6 +139,15 @@ struct WorktreeListResult {
 struct WorktreeInfo {
     branch: Option<String>,
     path: String,
+    open_workspace_id: Option<String>,
+    repo_root: Option<String>,
+}
+
+/// What `worktree_close` removed, and whether its Herdr workspace went with it.
+pub struct WorktreeRemoval {
+    pub path: String,
+    pub workspace_closed: Option<String>,
+    pub workspace_error: Option<String>,
 }
 
 /// Reply content is everything after the LAST occurrence of `marker` on screen.
@@ -586,6 +595,24 @@ impl HerdrClient {
         Ok(parsed.result.panes)
     }
 
+    /// Pane list scoped to one workspace. `init`/`doctor` use this so they do
+    /// not read another office's panes.
+    pub fn pane_list_for_workspace(&self, workspace: &str) -> Result<Vec<HerdrPaneInfo>> {
+        let output = Command::new("herdr")
+            .args(["pane", "list", "--workspace", workspace])
+            .output()
+            .context("Failed to run herdr pane list")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "herdr pane list failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let parsed: HerdrPaneListResponse =
+            serde_json::from_slice(&output.stdout).context("Failed to parse herdr pane list")?;
+        Ok(parsed.result.panes)
+    }
+
     pub fn agent_list(&self) -> Result<Vec<HerdrAgent>> {
         let output = Command::new("herdr")
             .args(["agent", "list"])
@@ -858,7 +885,7 @@ impl HerdrClient {
     /// submitted.
     pub fn agent_prompt_only(&self, name: &str, prompt: &str) -> Result<()> {
         let output = Command::new("herdr")
-            .args(["agent", "prompt", name, prompt])
+            .args(["agent", "prompt", name, "--", prompt])
             .output()
             .context("Failed to run herdr agent prompt")?;
 
@@ -1258,11 +1285,15 @@ impl HerdrClient {
     /// created. Seats must open here, not in whichever workspace happened to
     /// invoke `init`.
     pub fn ensure_workspace(&self, root: &Path, label: &str) -> Result<String> {
-        if let Some(id) = self.workspace_for_path(root) {
+        if let Some(id) = self.workspace_for_path_exact(root) {
             return Ok(id);
         }
         if let Ok(list) = self.workspace_list() {
-            if let Some(ws) = list.iter().find(|w| w.label == label) {
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            if let Some(ws) = list
+                .iter()
+                .find(|w| w.label == label && self.workspace_has_pane_at(&w.workspace_id, &root))
+            {
                 return Ok(ws.workspace_id.clone());
             }
         }
@@ -1310,6 +1341,172 @@ impl HerdrClient {
         Ok(resp.result.workspaces)
     }
 
+    /// Close one workspace. Closing a linked-worktree workspace closes its
+    /// tabs and panes, including the worker and the Radio view the plugin may
+    /// have opened there.
+    pub fn workspace_close(&self, workspace_id: &str) -> Result<()> {
+        let out = Command::new("herdr")
+            .args(["workspace", "close", workspace_id])
+            .output()
+            .context("Failed to run herdr workspace close")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "herdr workspace close {} failed: {}",
+                workspace_id,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    /// The open workspace for one worktree path, but only when the worktree
+    /// belongs to `repo`. Returns None for another office's worktree or for an
+    /// unopened one.
+    pub fn workspace_for_worktree_path(&self, repo: &Path, path: &Path) -> Option<String> {
+        let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+        let path_canon = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf());
+        self.herdr_worktrees(repo).into_iter().find_map(
+            |(worktree_path, _, workspace, repo_root)| {
+                let worktree_path = PathBuf::from(worktree_path);
+                let same_path = worktree_path
+                    .canonicalize()
+                    .map(|candidate| candidate == path_canon)
+                    .unwrap_or(false);
+                if same_path && worktree_in_repo(repo_root.as_deref(), &worktree_path, &repo_canon)
+                {
+                    workspace
+                } else {
+                    None
+                }
+            },
+        )
+    }
+
+    /// Linked-worktree workspaces belonging to `repo`, as (workspace, path).
+    /// Used by `doctor` to find a Radio view that leaked into a worktree.
+    pub fn linked_worktree_workspaces(&self, repo: &Path) -> Vec<(String, String)> {
+        let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+        self.herdr_worktrees(repo)
+            .into_iter()
+            .filter_map(|(path, _, workspace, repo_root)| {
+                let path = PathBuf::from(path);
+                let linked = path
+                    .canonicalize()
+                    .map(|candidate| candidate != repo_canon)
+                    .unwrap_or(false);
+                if linked && worktree_in_repo(repo_root.as_deref(), &path, &repo_canon) {
+                    workspace.map(|workspace| (workspace, path.display().to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Ensure the office workspace has a Radio view tab.
+    ///
+    /// The Radio plugin's `workspace.created` hook opens one for a primary
+    /// workspace, but an existing office (or a workspace whose view was
+    /// closed) has none. `init` owns that gap. A linked worktree is never a
+    /// target: one dashboard per office is enough.
+    pub fn ensure_radio_view(&self, workspace_id: &str) -> Result<()> {
+        // Radio is optional. Without its CLI the plugin pane has nothing to
+        // run; `init` must still seat the office.
+        let radio_installed = Command::new("radio")
+            .arg("--version")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if !radio_installed {
+            return Ok(());
+        }
+        let radio_home = std::env::var("RADIO_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| {
+                dirs::home_dir().map(|home| home.join(".local/share/herdr-radio"))
+            })
+            .context("cannot resolve the Radio state directory")?;
+        let radio_home = radio_home.canonicalize().unwrap_or(radio_home);
+        let has_view = |panes: &[HerdrPaneInfo]| {
+            panes.iter().any(|pane| {
+                pane.workspace_id == workspace_id
+                    && Path::new(&pane.cwd)
+                        .canonicalize()
+                        .map(|cwd| cwd == radio_home)
+                        .unwrap_or(false)
+            })
+        };
+
+        if has_view(&self.pane_list_for_workspace(workspace_id)?) {
+            return Ok(());
+        }
+        // `workspace.created` is an asynchronous plugin hook. Give it one beat
+        // before opening a duplicate on a workspace that was just created.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if has_view(&self.pane_list_for_workspace(workspace_id)?) {
+            return Ok(());
+        }
+
+        let out = Command::new("herdr")
+            .args([
+                "plugin", "pane", "open",
+                "--plugin", "radio",
+                "--entrypoint", "view",
+                "--workspace", workspace_id,
+                "--no-focus",
+            ])
+            .output()
+            .context("Failed to run herdr plugin pane open")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "herdr plugin pane open failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    /// True when `workspace` holds a pane whose cwd is exactly `root`.
+    /// A shared label is not proof of ownership: `workspace list` is
+    /// server-wide, so adoption requires a pane in this checkout.
+    fn workspace_has_pane_at(&self, workspace: &str, root: &Path) -> bool {
+        let Ok(panes) = self.pane_list_for_workspace(workspace) else {
+            return false;
+        };
+        panes.iter().any(|pane| {
+            Path::new(&pane.cwd)
+                .canonicalize()
+                .map(|cwd| cwd == root)
+                .unwrap_or(false)
+        })
+    }
+
+    /// The workspace whose pane cwd is exactly `root`. Unlike
+    /// `workspace_for_path`, this never adopts a worker worktree nested under
+    /// the office: seating the manager there means the next `close` for that
+    /// task kills the office seats.
+    fn workspace_for_path_exact(&self, root: &Path) -> Option<String> {
+        let out = Command::new("herdr")
+            .args(["pane", "list"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let resp: HerdrPaneListResponse = serde_json::from_slice(&out.stdout).ok()?;
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        resp.result.panes.into_iter().find_map(|pane| {
+            Path::new(&pane.cwd)
+                .canonicalize()
+                .ok()
+                .filter(|cwd| cwd == &root)
+                .map(|_| pane.workspace_id)
+        })
+    }
+
     /// The workspace that already hosts a pane inside `root`, if any. Exact
     /// checkouts win over a pane sitting in a subdirectory.
     pub fn workspace_for_path(&self, root: &Path) -> Option<String> {
@@ -1340,17 +1537,36 @@ impl HerdrClient {
     // worktrees belongs to foreman, not Zolly. `worktree_close` stays —
     // closing a worktree foreman opened is not opening one.
 
-    pub fn worktree_close(&self, repo: &Path, task_id: &str) -> Result<Option<String>> {
+    pub fn worktree_close(&self, repo: &Path, task_id: &str) -> Result<Option<WorktreeRemoval>> {
         // Two sources, both consulted because neither is complete on its own:
         // git is authoritative about what a worktree *is*, herdr knows which
         // ones it opened as workspaces. herdr being unreachable is not an
         // error here — `zolly close` must sweep a worktree even when it is.
+        let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
         let conventional = repo.join(".agents/worktrees").join(task_id);
-        let mut registered = git_worktrees(repo);
-        for (path, branch) in self.herdr_worktrees() {
+        let mut registered: Vec<(PathBuf, Option<String>, Option<String>, Option<String>)> =
+            git_worktrees(repo)
+                .into_iter()
+                .map(|(path, branch)| (path, branch, None, None))
+                .collect();
+        for (path, branch, workspace, repo_root) in self.herdr_worktrees(repo) {
             let path = PathBuf::from(path);
-            if !registered.iter().any(|(known, _)| *known == path) {
-                registered.push((path, branch));
+            // Office boundary: `herdr worktree list` is server-wide. Ignore a
+            // worktree whose repo root is another office, and ignore one with
+            // no provenance whose path is outside this checkout.
+            if !worktree_in_repo(repo_root.as_deref(), &path, &repo_canon) {
+                continue;
+            }
+            if let Some(row) = registered
+                .iter_mut()
+                .find(|(known, _, _, _)| known == &path)
+            {
+                row.2 = workspace;
+                if repo_root.is_some() {
+                    row.3 = repo_root;
+                }
+            } else {
+                registered.push((path, branch, workspace, repo_root));
             }
         }
 
@@ -1363,19 +1579,19 @@ impl HerdrClient {
             normalize_task_id(task_id),
         ];
         let target = if conventional.exists()
-            || registered.iter().any(|(known, _)| *known == conventional)
+            || registered.iter().any(|(known, _, _, _)| known == &conventional)
         {
             Some(conventional)
         } else {
             registered
                 .iter()
-                .find(|(_, branch)| {
+                .find(|(_, branch, _, _)| {
                     branch
                         .as_deref()
                         .map(|b| wanted.iter().any(|w| w == b))
                         .unwrap_or(false)
                 })
-                .map(|(path, _)| path.clone())
+                .map(|(path, _, _, _)| path.clone())
         };
 
         let Some(path) = target else {
@@ -1387,11 +1603,32 @@ impl HerdrClient {
 
         // Safety belt: never remove the checkout we are standing in, however
         // the task id was spelled.
-        let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
         if path.canonicalize().map(|p| p == repo_canon).unwrap_or(false) {
             return Ok(None);
         }
 
+        // A target found by branch name must still belong to this office. Git
+        // worktrees are already scoped to `repo`; a herdr row carries its own
+        // repo root. Anything else is another office's worktree.
+        let target_in_repo = path
+            .canonicalize()
+            .map(|p| p.starts_with(&repo_canon))
+            .unwrap_or(false)
+            || registered
+                .iter()
+                .find(|(known, _, _, _)| known == &path)
+                .and_then(|(_, _, _, root)| root.as_deref())
+                .and_then(|root| Path::new(root).canonicalize().ok())
+                .map(|root| root == repo_canon)
+                .unwrap_or(false);
+        if !target_in_repo {
+            return Ok(None);
+        }
+
+        // Remove the checkout first. If Git refuses (a dirty worktree), leave
+        // the workspace in place so the worker can still be inspected. Once
+        // the checkout is gone, close the workspace: that kills the worker and
+        // any Radio view, and removes the tab.
         let output = Command::new("git")
             .args(["worktree", "remove", &path.to_string_lossy()])
             .current_dir(repo)
@@ -1402,18 +1639,42 @@ impl HerdrClient {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("git worktree remove {} failed: {}", path.display(), stderr.trim());
         }
-        Ok(Some(path.display().to_string()))
+
+        let workspace = registered
+            .iter()
+            .find(|(known, _, _, _)| known == &path)
+            .and_then(|(_, _, workspace, _)| workspace.clone());
+        let mut workspace_closed = None;
+        let mut workspace_error = None;
+        if let Some(workspace) = workspace {
+            match self.workspace_close(&workspace) {
+                Ok(()) => workspace_closed = Some(workspace),
+                Err(e) => workspace_error = Some(e.to_string()),
+            }
+        }
+
+        Ok(Some(WorktreeRemoval {
+            path: path.display().to_string(),
+            workspace_closed,
+            workspace_error,
+        }))
     }
 
-    /// Worktrees herdr lists, as (path, branch). Empty when herdr is down or
-    /// the reply does not parse — a missing source is not an error for a caller
-    /// that must sweep regardless.
-    fn herdr_worktrees(&self) -> Vec<(String, Option<String>)> {
-        // No --workspace filter: herdr only returns worktrees whose
-        // open_workspace_id matches the filter, and most auto/* worktrees
-        // report None there. Filtering by w29 hid every task worktree, so
-        // `zolly close` could never find one. List everything instead.
-        let Ok(output) = Command::new("herdr").args(["worktree", "list"]).output() else {
+    /// Worktrees herdr lists, as (path, branch, open workspace, repo root).
+    /// Empty when herdr is down or the reply does not parse — a missing source
+    /// is not an error for a caller that must sweep regardless.
+    fn herdr_worktrees(
+        &self,
+        repo: &Path,
+    ) -> Vec<(String, Option<String>, Option<String>, Option<String>)> {
+        // --cwd scopes the list to this office's repo. Do not ask herdr for a
+        // server-wide worktree list and filter afterwards; another office's
+        // worktrees are not ours to read.
+        let Ok(output) = Command::new("herdr")
+            .args(["worktree", "list", "--cwd"])
+            .arg(repo)
+            .output()
+        else {
             return Vec::new();
         };
         if !output.status.success() {
@@ -1427,8 +1688,31 @@ impl HerdrClient {
         resp.result
             .worktrees
             .into_iter()
-            .map(|w| (w.path, w.branch.map(|b| b.to_lowercase())))
+            .map(|w| {
+                (
+                    w.path,
+                    w.branch.map(|b| b.to_lowercase()),
+                    w.open_workspace_id,
+                    w.repo_root,
+                )
+            })
             .collect()
+    }
+}
+
+/// True when a herdr worktree row belongs to `repo`. A row with provenance is
+/// checked by its repo root; a row without it is checked by path containment.
+/// This is the office boundary for `zolly close`.
+fn worktree_in_repo(repo_root: Option<&str>, path: &Path, repo: &Path) -> bool {
+    match repo_root {
+        Some(root) => Path::new(root)
+            .canonicalize()
+            .map(|root| root == repo)
+            .unwrap_or(false),
+        None => path
+            .canonicalize()
+            .map(|path| path.starts_with(repo))
+            .unwrap_or(false),
     }
 }
 
@@ -1660,6 +1944,42 @@ mod tests {
             normalize_task_id("auto-atlas-1"),
             normalize_task_id("auto-atlas-10")
         );
+    }
+
+    #[test]
+    fn worktree_repo_boundary_rejects_another_office() {
+        let base = std::env::temp_dir().join(format!(
+            "zolly-worktree-boundary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let repo = base.join("office-a");
+        let other = base.join("office-b");
+        let inside = repo.join(".agents/worktrees/t1");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        let repo_canon = repo.canonicalize().unwrap();
+        let inside_canon = inside.canonicalize().unwrap();
+        let other_canon = other.canonicalize().unwrap();
+
+        assert!(worktree_in_repo(None, &inside_canon, &repo_canon));
+        assert!(!worktree_in_repo(None, &other_canon, &repo_canon));
+        assert!(!worktree_in_repo(
+            Some(other.to_string_lossy().as_ref()),
+            &other_canon,
+            &repo_canon
+        ));
+        assert!(worktree_in_repo(
+            Some(repo.to_string_lossy().as_ref()),
+            &inside_canon,
+            &repo_canon
+        ));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

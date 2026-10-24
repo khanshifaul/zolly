@@ -136,8 +136,9 @@ pub fn evaluate_nudge(root: &Path, brief: &Brief, stamp_path: &Path, interval_se
     }
 
     // Secondary trigger: stalls, filtered to unmerged work. A stall whose
-    // result file already sits on origin/main is settled (merged) and must not
-    // wake the founder — that mislabel is exactly what gets a keepalive muted.
+    // result file already sits on the configured integration ref is settled
+    // (merged) and must not wake the founder — that mislabel is exactly what
+    // gets a keepalive muted.
     // Gates remain the primary trigger; stalls are only the fallback.
     let live_stalls: Vec<_> = brief.waiting.stalls
         .iter()
@@ -178,18 +179,23 @@ fn stamp_path(root: &Path) -> PathBuf {
     root.join(".agents/zolly").join(STAMP_FILE)
 }
 
-/// True when `name` (a `.agents/results/` result file) is present on
-/// `origin/main` — i.e. the task is merged and settled, so its stall marker
-/// is stale and must not nudge the founder.
+/// True when `name` (a `.agents/results/` result file) is present on the
+/// configured integration ref — i.e. the task is merged and settled, so its
+/// stall marker is stale and must not nudge the founder.
 fn result_is_merged(root: &Path, name: &str) -> bool {
-    let output = Command::new("git")
-        .args(["cat-file", "-e", &format!("origin/main:.agents/results/{}", name)])
-        .current_dir(root)
-        .output();
-    match output {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
-    }
+    let office = crate::office::Office::load(root.to_path_buf());
+    office.integration_refs().iter().any(|refname| {
+        Command::new("git")
+            .args([
+                "cat-file",
+                "-e",
+                &format!("{refname}:.agents/results/{name}"),
+            ])
+            .current_dir(root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
 }
 
 fn now_secs() -> u64 {

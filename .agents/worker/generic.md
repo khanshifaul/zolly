@@ -90,6 +90,11 @@ gate: human | auto
 ## Blockers
 
 <what stopped this, or "none">
+
+## Reflection
+
+<what was corrected, whether it recurred or cost real time, and whether it was
+recorded as a learning or promoted to a rule. "Nothing to record" is valid.>
 ```
 
 Then commit that file on the task branch. It is the last thing you write.
@@ -124,6 +129,9 @@ learn that the next agent would otherwise re-derive? A learning is a
 a way the code does not show. It is worth recording only if it recurred or if
 one occurrence already cost real time. If it is now always true, it belongs in
 a rule file, not in the log.
+
+Write that answer into the result's `## Reflection` section. "Nothing to
+record" is a valid reflection; a summary of what you did is not.
 
 ## Guardrails
 

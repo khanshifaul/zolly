@@ -51,7 +51,8 @@ that line resolves.
 .agents/shared/memory read                # all three live files, one shot
 .agents/shared/memory read archive        # the rolled-off history
 .agents/shared/memory search "telegram"   # live + archive, with entry ids
-.agents/shared/memory check               # bound + secret scan
+.agents/shared/memory log D-0002          # that entry; its own Supersedes:/Promoted to: lines included
+.agents/shared/memory check               # counts, 90% trim, bound + secret scan
 .agents/shared/memory compact             # drop retracted bodies, keep ids + pointers
 ```
 
@@ -87,12 +88,13 @@ one, never a torn one. The live files are bounded (20 decisions, 30 learnings,
 
 ## How this differs from the other memory files
 
-Four overlapping memory files is the problem, not the solution. The split is by
+Overlapping memory files is the problem, not the solution. The split is by
 **question**, and by load cost:
 
 | File | Question | Fate |
 |---|---|---|
-| `HANDOFF.md` | *What happened, chronologically?* | permanent log; read by search, never loaded in full |
+| `HANDOFF.md` | *What happened, chronologically?* | permanent log; the installer writes it; read by search, never loaded in full |
+| `.agents/memory/results-index.md` | *What shipped?* | one row per merged task; the reviewer appends it on the task branch before the squash merge |
 | `.agents/queue/` | *What is the office working on right now?* | machine-written, dies with the machine by design |
 | `OPEN-QUESTIONS.md` | *What can only the founder decide?* | **deleted** when answered |
 | **`.agents/memory/`** | *What do I already know that I would otherwise re-derive?* | bounded, committed, read in one shot |

@@ -141,25 +141,22 @@ Never claim a tool fix is live on the strength of the binary alone. The
 installer's own output only suggests a restart when the **unit file** changed,
 not when the binary changed — that gap is where this failure comes from.
 
-## Telegram replies — mention the founder in a group
+## Telegram replies — private founder chat only
 
 `zolly telegram-reply --chat-id <id> --text "<text>"` — or the `telegram_reply`
-tool, which takes the same two fields. How the text starts depends on the chat
-the inbound message came from:
+tool, which takes the same two fields. The listener accepts an inbound message
+only when it is both from an allowed user and in that user's private chat
+(`chat.type == "private"` and `chat.id == from.id`). A message from the founder
+in a group/supergroup is ignored rather than answered there: the brief, gate
+actions, and the OMP collab control link must not be posted to other members.
 
-| Chat id | Chat | First line |
-|---|---|---|
-| positive | the founder's DM | no mention — the message already notifies them |
-| negative | group or supergroup | `@<handle>` — otherwise the founder is not notified among the members |
+`ZOLLY_FOUNDER_USERNAME` in `~/.config/zolly/{{FREQUENCY}}/credentials` is the
+founder's handle without the `@`. It is kept for existing templates and
+mentions in generated text; it is not an authorization boundary. Read that one
+line; never read the token beside it into a reply, a log, or a brief.
 
-The handle is `ZOLLY_FOUNDER_USERNAME` in
-`~/.config/zolly/{{FREQUENCY}}/credentials` — written by the installer from the
-bot's own updates, without the `@`. Read that one line; never read the token
-beside it into a reply, a log, or a brief.
-
-Empty key means the founder set no public username, so an `@`-mention cannot
-reach them. Reply without one and say so in the in-office brief — a group ping
-that never happened must not read as delivered.
+Empty key means the founder set no public username. Do not claim a mention was
+delivered when the key is empty.
 
 ## After each brief
 

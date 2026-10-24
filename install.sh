@@ -81,7 +81,7 @@ if [ ! -f "$0" ]; then
   ZOLLY_REF="${ZOLLY_REF:-main}"
   : "${ZOLLY_KIT_URL:=https://github.com/khanshifaul/zolly/archive/$ZOLLY_REF.tar.gz}"
   _tmp=$(mktemp -d)
-  trap 'rm -rf "$_tmp"' EXIT INT TERM
+  trap 'rc=$?; rm -rf "$_tmp"; if [ "$rc" -ne 0 ] && [ -n "${BACKUP:-}" ]; then printf "\ninstall.sh: FAILED. The previous office is preserved at:\n  %s\n" "$BACKUP" >&2; fi' EXIT INT TERM
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$ZOLLY_KIT_URL" | tar -xz -C "$_tmp" || { echo "install.sh: could not fetch $ZOLLY_KIT_URL" >&2; exit 1; }
   elif command -v wget >/dev/null 2>&1; then
@@ -187,6 +187,15 @@ die() {
   exit 1
 }
 say() { printf '%s\n' "$1"; }
+
+# Values interpolated into TOML/systemd must be single-line. Quotes and
+# backslashes are escaped for a TOML basic string; systemd bind values are
+# validated separately because they are not quoted there.
+single_line() { printf '%s' "$1" | tr -d '\015\012'; }
+toml_escape() { single_line "$1" | sed 's/[\\"]/\\&/g'; }
+WEBHOOK_URL=$(single_line "$WEBHOOK_URL")
+WEBHOOK_SECRET=$(single_line "$WEBHOOK_SECRET")
+case "$BIN_DEST" in *[[:cntrl:]]*) die "ZOLLY_BIN_DEST contains control characters" ;; esac
 
 # One icon, one column. Every status line starts at the same place in a
 # terminal and in a piped log; the `skip ` word stays contiguous for greps.
@@ -321,20 +330,21 @@ usage() {
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
+need_value() { [ "$#" -ge 2 ] || die "missing value for $1"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name)         FREQ="${2:-}"; shift 2 ;;
-    --founder)      FOUNDER="${2:-}"; shift 2 ;;
-    --base-branch)  BASE_BRANCH="${2:-}"; EXPLICIT_BASE=1; shift 2 ;;
-    --remote)       REMOTE="${2:-}"; shift 2 ;;
+    --name)         need_value "$@"; FREQ="$2"; shift 2 ;;
+    --founder)      need_value "$@"; FOUNDER="$2"; shift 2 ;;
+    --base-branch)  need_value "$@"; BASE_BRANCH="$2"; EXPLICIT_BASE=1; shift 2 ;;
+    --remote)       need_value "$@"; REMOTE="$2"; shift 2 ;;
     --no-systemd)   DO_SYSTEMD=0; shift ;;
     --no-ponder)    DO_PONDER=0; shift ;;
     --no-binary)    DO_BINARY=0; shift ;;
     --no-mcp)       DO_MCP=0; shift ;;
     --no-telegram)  DO_TELEGRAM=0; shift ;;
-    --webhook-url)  WEBHOOK_URL="${2:-}"; WEBHOOK_DECIDED=1; shift 2 ;;
-    --webhook-bind) WEBHOOK_BIND="${2:-}"; WEBHOOK_BIND_EXPLICIT=1; shift 2 ;;
-    --webhook-secret) WEBHOOK_SECRET="${2:-}"; shift 2 ;;
+    --webhook-url)  need_value "$@"; WEBHOOK_URL="$2"; WEBHOOK_DECIDED=1; shift 2 ;;
+    --webhook-bind) need_value "$@"; WEBHOOK_BIND="$2"; WEBHOOK_BIND_EXPLICIT=1; shift 2 ;;
+    --webhook-secret) need_value "$@"; WEBHOOK_SECRET="$2"; shift 2 ;;
     --yes|-y)       ASSUME_YES=1; shift ;;
     --force)        FORCE=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
@@ -345,10 +355,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+WEBHOOK_URL=$(single_line "$WEBHOOK_URL")
+WEBHOOK_SECRET=$(single_line "$WEBHOOK_SECRET")
+
 # The target defaults to the current directory, so `cd project && ... | bash`
 # installs into that project without repeating its path.
 [ -n "$TARGET" ] || TARGET="."
-TARGET=$(CDPATH= cd -- "$TARGET" 2>/dev/null && pwd) || die "target directory does not exist: $TARGET"
+TARGET=$(CDPATH= cd -- "$TARGET" 2>/dev/null && pwd -P) || die "target directory does not exist: $TARGET"
+case "$TARGET" in *[[:cntrl:]]*) die "target path contains control characters" ;; esac
 [ -d "$TEMPLATE" ] || die "template not found at $TEMPLATE — run install.sh from the zolly kit directory"
 
 if [ "$COLOR" -eq 1 ]; then
@@ -359,7 +373,7 @@ fi
 # ---------------------------------------------------------------------------
 # token guard: the template must never carry a secret
 # ---------------------------------------------------------------------------
-stray_env=$(find "$TEMPLATE" -name '.env' -o -name '*.env' | head -20)
+stray_env=$(find "$TEMPLATE" -type f \( -name '.env' -o -name '*.env' \) | head -20)
 [ -z "$stray_env" ] || {
   printf 'install.sh: refusing to install — the template contains a secret file:\n' >&2
   printf '  %s\n' "$stray_env" >&2
@@ -439,7 +453,12 @@ FREQ=$(printf '%s' "$FREQ" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g
 if [ "${#FREQ}" -gt 24 ]; then
   FREQ=$(printf '%s' "$FREQ" | cut -c1-24 | sed 's/-*$//')
 fi
-PROJECT_NAME=$(basename "$TARGET")
+PROJECT_NAME=$(single_line "$(basename "$TARGET")")
+git -C "$TARGET" check-ref-format --branch "$BASE_BRANCH" >/dev/null 2>&1 \
+  || die "invalid base branch name: $BASE_BRANCH"
+case "$REMOTE" in
+  ""|-*|*[!A-Za-z0-9._-]*) die "invalid remote name: $REMOTE" ;;
+esac
 
 # A frequency is an identity: seat names, the credentials directory and the
 # systemd unit all derive from it. Two projects must never silently share one.
@@ -449,7 +468,7 @@ if [ -f "$CRED_ROOT/$FREQ/project" ]; then
   [ "$OWNER" = "$PROJECT_ID" ] || die "frequency '$FREQ' already belongs to $OWNER — re-run with --name <distinct>"
 fi
 if [ "$DRY_RUN" -ne 1 ]; then
-  ( umask 077; mkdir -p "$CRED_ROOT/$FREQ"; printf '%s\n' "$PROJECT_ID" > "$CRED_ROOT/$FREQ/project" )
+  ( umask 077; mkdir -p "$CRED_ROOT/$FREQ"; chmod 700 "$CRED_ROOT" "$CRED_ROOT/$FREQ"; printf '%s\n' "$PROJECT_ID" > "$CRED_ROOT/$FREQ/project" )
 fi
 
 ok "frequency: $FREQ"
@@ -458,6 +477,7 @@ ok "project:   $PROJECT_NAME"
 if [ -z "$FOUNDER" ]; then
   FOUNDER=$(ask_text "Founder name:")
 fi
+FOUNDER=$(single_line "$FOUNDER")
 [ -n "$FOUNDER" ] || warn "no founder name — the office runs without Telegram greetings"
 
 # ---------------------------------------------------------------------------
@@ -470,6 +490,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   note "would copy $TEMPLATE -> $AGENTS_DIR"
 else
   BACKUP=""
+  if [ -L "$AGENTS_DIR" ]; then
+    die "$AGENTS_DIR is a symlink — refusing to back it up, remove it, or replace it with --force"
+  fi
   if [ -e "$AGENTS_DIR" ]; then
     # --force must never be a silent downgrade of an existing office. The
     # template's memory files are empty scaffolds; the target's are the only
@@ -539,7 +562,7 @@ else
       extras=1
     fi
     for f in "$BACKUP"/*; do
-      [ -f "$f" ] || continue
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
       name=$(basename "$f")
       case "$name" in
         AGENTS.md|nudge.stamp|LAST_PROMPT.md|STATE.md|day.json|*.pid) continue ;;
@@ -568,11 +591,12 @@ else
     # while skipping runtime state and build output.
     restore_marker="$AGENTS_DIR/.restore-missing"
     : > "$restore_marker"
-    find "$BACKUP" \( -type f -o -type l \) -print0 |
+    find "$BACKUP" -type f -print0 |
       while IFS= read -r -d '' f; do
         rel=${f#"$BACKUP"/}
         case "$rel" in
           worktrees/*|runs/*|memory/.work/*|memory/.lock|memory/*.tmp|zolly/tool/target/*) continue ;;
+          zolly/.env|.env) continue ;;
           AGENTS.md|nudge.stamp|LAST_PROMPT.md|STATE.md|day.json|*.pid) continue ;;
         esac
         [ -e "$AGENTS_DIR/$rel" ] && continue
@@ -646,12 +670,12 @@ if [ "$DRY_RUN" -ne 1 ]; then
 # The installer writes this file; edit it directly any time — nothing else
 # reads the values, this file does.
 frequency = "$FREQ"
-founder = "$FOUNDER"
-base_branch = "$BASE_BRANCH"
-remote = "$REMOTE"
+founder = "$(toml_escape "$FOUNDER")"
+base_branch = "$(toml_escape "$BASE_BRANCH")"
+remote = "$(toml_escape "$REMOTE")"
 voice = false
 # The project's display name, used in the office's own greetings.
-project = "$PROJECT_NAME"
+project = "$(toml_escape "$PROJECT_NAME")"
 EOF
   ok "$AGENTS_DIR/zolly/config.toml"
 fi
@@ -746,8 +770,8 @@ EOF
     ok "$TARGET/OPEN-QUESTIONS.md"
   fi
 
-  # The handover point. The `recap` skill reads it from the tail on a cold
-  # start; the `close-the-day` skill writes it at the end of a day.
+  # The handover point. The installer writes it; the `close-the-day` skill
+  # maintains it; the `recap` skill reads it from the tail on a cold start.
   if [ ! -f "$TARGET/HANDOFF.md" ]; then
     cat > "$TARGET/HANDOFF.md" <<'EOF'
 # Handoff
@@ -806,6 +830,8 @@ EOF
 .agents/zolly/task_ledger.json
 .agents/zolly/task_ledger.json.tmp
 .agents/zolly/dead_letter.jsonl
+.agents/zolly/.env
+.env
 .agents/nudge.stamp
 EOF
     ok "runtime gitignore entries"
@@ -1073,6 +1099,9 @@ if [ "$WEBHOOK_BIND_EXPLICIT" -eq 0 ] && [ -f "$CRED_FILE" ]; then
   stored_bind=$(sed -n 's/^ZOLLY_TELEGRAM_WEBHOOK_BIND=//p' "$CRED_FILE")
   [ -z "$stored_bind" ] || WEBHOOK_BIND="$stored_bind"
 fi
+if ! printf '%s' "$WEBHOOK_BIND" | grep -Eq '^([A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$'; then
+  die "invalid webhook bind '$WEBHOOK_BIND' — expected host:port, e.g. 127.0.0.1:8080"
+fi
 
 WANT_TELEGRAM=0
 if [ "$DO_TELEGRAM" -eq 0 ]; then
@@ -1101,7 +1130,19 @@ else
       IDS=$(tg_chat_ids "$TG_JSON")
       if [ -n "$IDS" ]; then
         note "chat ids: $IDS"
-        [ "$(ask_yn "Use these ids?" y)" = y ] || IDS=""
+        case "$IDS" in
+          *,*)
+            if [ "$ASSUME_YES" -eq 1 ]; then
+              warn "multiple chat ids discovered — refusing --yes auto-accept; set ZOLLY_ALLOWED_IDS explicitly"
+              IDS=""
+            elif [ "$(ask_yn "Use all of these ids?" n)" = n ]; then
+              IDS=""
+            fi
+            ;;
+          *)
+            [ "$(ask_yn "Use these ids?" y)" = y ] || IDS=""
+            ;;
+        esac
       elif [ -n "$TOKEN" ]; then
         note "no chat id yet — send the bot a message, or paste the id below"
       fi
@@ -1112,11 +1153,15 @@ else
       [ -z "$USERNAME" ] || note "handle: @$USERNAME"
     fi
     if [ -n "$IDS" ] && [ -z "$USERNAME" ]; then
-      warn "no @handle — group replies will not mention the founder"
+      warn "no @handle — generated text has no founder mention"
       note "set ZOLLY_FOUNDER_USERNAME in $CRED_FILE to add one"
     fi
   fi
 fi
+
+TOKEN=$(single_line "$TOKEN")
+IDS=$(single_line "$IDS")
+USERNAME=$(single_line "$USERNAME")
 
 if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
   if [ -n "$IDS" ]; then
@@ -1125,6 +1170,7 @@ if [ "$WANT_TELEGRAM" -eq 1 ] && [ -n "$TOKEN" ]; then
     # re-run cannot silently downgrade the office back to long-polling.
     if [ -z "$WEBHOOK_URL" ] && [ -n "$TOKEN" ] && [ -f "$CRED_FILE" ]; then
       WEBHOOK_URL=$(tg_webhook_url "$TOKEN")
+      WEBHOOK_URL=$(single_line "$WEBHOOK_URL")
       [ -z "$WEBHOOK_URL" ] || note "webhook already registered: $WEBHOOK_URL"
     fi
     if [ "$WEBHOOK_DECIDED" -eq 0 ] && [ -z "$WEBHOOK_URL" ] && can_ask; then

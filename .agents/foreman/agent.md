@@ -128,7 +128,8 @@ that does not exist.
    Read the worker's pane and its `.agents/results/<task-id>.md`; message it on
    the bus (`radio pm worker-<task-id>`) when it stalls. Do not re-send the brief.
 6. **Invoke the reviewer** — pass the result file and diff; reviewer merges on PASS or objects
-7. **Close the worktree** — `zolly close <task-id>` removes the worktree and deletes the branch
+7. **Close the worktree** — `zolly close <task-id>` closes the worker's Herdr
+   workspace/tab, removes the worktree, and deletes the branch
 8. **Report back** — the result file is written on the task branch; reply to the caller
 
 ## What you don't do
@@ -174,7 +175,7 @@ You plan, delegate, monitor, report, go idle. Next prompt = next task.
    brief. Never re-send the brief blindly. Reuse the same worker for a follow-up
    on the same task; it already holds the context.
 6. Worker writes result to `.agents/results/<task-id>.md` **on the task branch** (in `.agents/worktrees/<task-id>/`), committed there before review. The main-checkout copy is never authoritative.
-7. `zolly close <task-id>` → removes the worktree and deletes the branch
+7. `zolly close <task-id>` → closes the worker's Herdr workspace/tab, removes the worktree, and deletes the branch
 
 **Why `worker-brief`, and why `--wait --until idle` cannot replace it.**
 `herdr agent prompt` types the text and presses Enter, but a large multi-line

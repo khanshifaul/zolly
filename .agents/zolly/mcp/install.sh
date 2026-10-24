@@ -39,8 +39,18 @@ ENV_JSON=""
 ENTRY_KEY="zolly"
 if [ -n "$FREQ" ]; then
   ENTRY_KEY="zolly-$FREQ"
+fi
+if [ -n "$FREQ" ] || [ -n "$ROOT" ]; then
+  ENV_PARTS=""
+  if [ -n "$FREQ" ]; then
+    ENV_PARTS="\"ZOLLY_MCP_AGENT\": \"zolly-$FREQ\""
+  fi
+  if [ -n "$ROOT" ]; then
+    [ -n "$ENV_PARTS" ] && ENV_PARTS="$ENV_PARTS, "
+    ENV_PARTS="$ENV_PARTS\"ZOLLY_ROOT\": \"${ROOT:-.}\""
+  fi
   ENV_JSON=",
-      \"env\": { \"ZOLLY_MCP_AGENT\": \"zolly-$FREQ\", \"ZOLLY_ROOT\": \"${ROOT:-.}\" }"
+      \"env\": { $ENV_PARTS }"
 fi
 
 if [ -n "$WRITE" ]; then
@@ -49,7 +59,7 @@ if [ -n "$WRITE" ]; then
     exit 1
   }
   mkdir -p "$WRITE/.omp"
-  python3 - "$WRITE/.omp/mcp.json" "$ENTRY_KEY" "$DEST" "${ROOT:-.}" "$FREQ" <<'PY'
+  python3 - "$WRITE/.omp/mcp.json" "$ENTRY_KEY" "$DEST" "$ROOT" "$FREQ" <<'PY'
 import json
 import os
 import sys
@@ -77,8 +87,14 @@ elif not isinstance(servers, dict):
 
 entry = {"type": "stdio", "command": dest, "args": [], "timeout": 120000,
          "instructions": True}
+env = {}
 if freq:
-    entry["env"] = {"ZOLLY_MCP_AGENT": f"zolly-{freq}", "ZOLLY_ROOT": root}
+    env["ZOLLY_MCP_AGENT"] = f"zolly-{freq}"
+    root = root or "."
+if root:
+    env["ZOLLY_ROOT"] = root
+if env:
+    entry["env"] = env
 servers[key] = entry
 if created and "$schema" not in data:
     data = {"$schema": SCHEMA, **data}

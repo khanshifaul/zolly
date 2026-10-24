@@ -47,6 +47,15 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(forged.returncode, 1)
         self.assertIn("may not contain a line starting with '## '", forged.stderr)
 
+    def test_agent_must_be_one_path_component(self):
+        for bad in ("../other", "a/b", "..", "."):
+            result = self.run_memory("--agent", bad, "read")
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn("one path component", result.stderr)
+        missing = self.run_memory("--agent")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("--agent needs a name", missing.stderr)
+
     def test_credential_shaped_text_is_refused(self):
         result = self.run_memory("add", "learning", "token is ghp_" + "A" * 36)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
@@ -344,6 +353,55 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(found.returncode, 0, found.stderr)
         self.assertIn("L-0001", found.stdout)
         self.assertIn("The lock is fd 9.", found.stdout)
+
+    def test_check_trims_at_ninety_percent(self):
+        for i in range(18):
+            result = self.run_memory("add", "decision", f"Decision {i:02d}")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        check = self.run_memory("check")
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertIn("decision: 18/20 (90%)", check.stdout)
+        self.assertIn("action: decision at 18/20", check.stdout)
+        self.assertIn("after: decision 17/20 (85%)", check.stdout)
+
+        self.assertNotIn("D-0001", self.run_memory("read", "decision").stdout)
+        archives = list((self.dir / "archive").glob("decisions-*.md"))
+        self.assertTrue(archives, "the oldest entry should be archived")
+        self.assertIn("D-0001", archives[0].read_text(encoding="utf-8"))
+
+        removed = self.run_memory("status")
+        self.assertNotEqual(removed.returncode, 0, "status is not an alias")
+        self.assertIn("usage:", removed.stderr)
+
+    def test_log_shows_supersession_links(self):
+        self.assertEqual(
+            self.run_memory("add", "decision", "Use SQLite.").returncode, 0
+        )
+        self.assertEqual(
+            self.run_memory(
+                "add", "decision", "Use Postgres.", "--supersedes", "D-0001"
+            ).returncode,
+            0,
+        )
+        self.assertEqual(self.run_memory("confirm", "D-0002").returncode, 0)
+
+        newest = self.run_memory("log", "D-0002")
+        self.assertEqual(newest.returncode, 0, newest.stderr)
+        self.assertIn("D-0002", newest.stdout)
+        self.assertIn("Supersedes: D-0001", newest.stdout)
+        self.assertNotIn("Use SQLite.", newest.stdout)
+
+        oldest = self.run_memory("log", "D-0001")
+        self.assertEqual(oldest.returncode, 0, oldest.stderr)
+        self.assertIn("D-0001", oldest.stdout)
+        self.assertIn("D-0002", oldest.stdout)
+
+    def test_log_unknown_id_fails(self):
+        self.assertEqual(self.run_memory("add", "decision", "one").returncode, 0)
+        result = self.run_memory("log", "D-9999")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no entry D-9999", result.stderr)
 
     def test_second_identical_add_is_recurrence(self):
         self.assertEqual(

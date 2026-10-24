@@ -2,6 +2,9 @@
 name = "zolly"
 version = "0.1.0"
 edition = "2024"
+description = "Installable per-project agent office: rules, personas, memory, MCP and a reviewer gate"
+license = "Apache-2.0"
+repository = "https://github.com/khanshifaul/zolly"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive", "env"] }

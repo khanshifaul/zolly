@@ -1,8 +1,12 @@
-//! Token, allowlist and HTTP client. Env var wins; `.agents/zolly/.env` is
-//! the shell fallback. The systemd unit reads `~/.config/zolly/credentials`
-//! via EnvironmentFile instead — `zolly doctor` checks the two sources for
-//! drift, because two tokens means the serve bot and a shell-run bot can be
-//! different bots.
+//! Token, allowlist and HTTP client. Env var wins; the installer-written
+//! `~/.config/zolly/<frequency>/credentials` is the only file fallback. The
+//! systemd unit reads that same file via EnvironmentFile — `zolly doctor`
+//! checks the two sources for drift, because two tokens means the serve bot
+//! and a shell-run bot can be different bots.
+//!
+//! Project-tree `.env` files are deliberately not read: `.agents/` is
+//! committed and a cloned repo must not be able to substitute a bot token or
+//! allow-list. Same reasoning as the ownership marker check below.
 //!
 //! Every request in this submodule goes through [`send_redacted`] /
 //! [`json_redacted`] / [`RequestFailure::from_reqwest`], and every failure
@@ -27,21 +31,26 @@ pub fn zolly_agent(root: &std::path::Path) -> String {
 }
 
 /// Shell fallback for commands run by hand. Precedence: the environment, then
-/// `<office>/.agents/zolly/.env`, then the file the installer writes for
-/// systemd (`~/.config/zolly/<frequency>/credentials`). The last one matters
-/// because a sourced credentials file sets shell variables, not exported ones,
-/// so `. credentials && zolly …` did not reach this process.
+/// the file the installer writes for systemd
+/// (`~/.config/zolly/<frequency>/credentials`). The last one matters because a
+/// sourced credentials file sets shell variables, not exported ones, so
+/// `. credentials && zolly …` did not reach this process.
+///
+/// The ownership marker is checked before the file is read: a cloned repo can
+/// change `frequency` in its tracked config, but it cannot change
+/// `~/.config/zolly/<frequency>/project`.
 pub(crate) fn load_credentials() {
     let Ok(root) = std::env::current_dir() else {
         return;
     };
-    let local = root.join(".agents/zolly/.env");
-    if local.is_file() {
-        let _ = dotenv::from_path(&local);
-    } else {
-        let _ = dotenv::dotenv();
-    }
     let office = crate::office::Office::load(root);
+    if !office.owned() {
+        eprintln!(
+            "telegram: refusing credentials for frequency '{}' — the ownership marker names another checkout",
+            office.frequency
+        );
+        return;
+    }
     let credentials = dirs::home_dir()
         .map(|home| {
             home.join(".config/zolly")

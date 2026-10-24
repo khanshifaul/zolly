@@ -77,7 +77,7 @@ happened. Do not leave the rule in both places.
 If you touched `.agents/memory/`:
 
 ```sh
-.agents/shared/memory check      # bound + secret scan
+.agents/shared/memory check      # counts, 90% trim, bound + secret scan
 ```
 
 A file being committed proves nothing about whether any session reads it. If you
