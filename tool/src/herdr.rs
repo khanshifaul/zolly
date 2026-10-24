@@ -887,13 +887,29 @@ impl HerdrClient {
         Ok(closed)
     }
 
+    /// herdr 0.9.1 takes `<TEXT>` as a positional and has no `--` separator
+    /// for it: `agent prompt <name> -- <text>` parses the text as an option
+    /// and fails with `unknown option: <first word>` before the agent is even
+    /// looked up. Text that starts with `-` (a brief whose first line is YAML
+    /// frontmatter) is option-shaped on its own, so it gets one leading
+    /// newline; the pane trims it.
+    fn prompt_text(prompt: &str) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
+        if prompt.starts_with('-') {
+            Cow::Owned(format!("\n{prompt}"))
+        } else {
+            Cow::Borrowed(prompt)
+        }
+    }
+
     /// Submit a prompt without waiting for or reading a reply. The caller is
     /// responsible for ensuring the agent is idle first (see `agent_wait`):
     /// a prompt sent before the TUI is reading stdin is buffered but never
     /// submitted.
     pub fn agent_prompt_only(&self, name: &str, prompt: &str) -> Result<()> {
         let output = Command::new("herdr")
-            .args(["agent", "prompt", name, "--", prompt])
+            .args(["agent", "prompt", name])
+            .arg(Self::prompt_text(prompt).as_ref())
             .output()
             .context("Failed to run herdr agent prompt")?;
 
@@ -1778,6 +1794,16 @@ fn git_worktrees(repo: &Path) -> Vec<(PathBuf, Option<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_text_is_never_option_shaped() {
+        // herdr 0.9.1 has no `--` separator for <TEXT>: `agent prompt <name>
+        // -- x` prints "unknown option: x" and never looks up the agent.
+        // Text that starts with `-` (a brief's YAML frontmatter) must be
+        // pushed off the option parser; the pane trims the newline.
+        assert_eq!(HerdrClient::prompt_text("hello"), "hello");
+        assert_eq!(HerdrClient::prompt_text("---\nname: x"), "\n---\nname: x");
+    }
 
     #[test]
     fn extract_reply_picks_the_last_occurrence() {

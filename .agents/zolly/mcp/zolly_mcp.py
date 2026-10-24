@@ -326,8 +326,12 @@ def zolly_say(text, wait_submit_ms=2000):
     screen_before = agent_screen(AGENT, 8)
     working_before = is_working(screen_before)
 
+    # herdr 0.9.1 has no `--` separator for <TEXT>; passing one makes the
+    # text parse as an option ("unknown option: <first word>"). Text that
+    # starts with `-` is option-shaped on its own, so give it a newline.
+    prompt_arg = ("\n" + text) if text.startswith("-") else text
     res = run(
-        [herdr_bin(), "agent", "prompt", AGENT, "--", text],
+        [herdr_bin(), "agent", "prompt", AGENT, prompt_arg],
         timeout_s=PROMPT_TIMEOUT_S,
     )
     delivered = res["exit_code"] == 0 and not res["timed_out"]
