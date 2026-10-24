@@ -135,6 +135,23 @@ without a model. The model does the work; the binary measures and gates it.
 - Not a replacement for branch protection. If the reviewer gate must hold
   against a misbehaving agent, enforce it in GitHub and CI.
 
+## Automatic reports (opt-in)
+
+Automatic bug reports are **off by default**. The installer shows the
+contribution policy and requires an explicit yes; `--yes` alone never opts in.
+Use `--contribute` only when you mean it, or `--no-contribute` to force it off.
+
+When enabled, `zolly` may create a public issue in
+[`khanshifaul/zolly`](https://github.com/khanshifaul/zolly) for a defect in
+zolly itself — an internal command failure (including an internal failure reported by `doctor`). The report
+contains the zolly version, command name, OS/architecture, timestamp, and a
+sanitized error or check detail. It never contains command arguments, briefs,
+prompts, project files, working paths, environment variables, credentials, or
+customer data. Reports are deduplicated and capped at five per day.
+
+The policy is [CONTRIBUTING.md](CONTRIBUTING.md). Opt out at any time with
+`contribute = false` in `.agents/zolly/config.toml`.
+
 ## Configuration
 
 `<project>/.agents/zolly/config.toml` is the single source. Precedence is
@@ -286,6 +303,8 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 | `--no-binary` | do not install the shared binary |
 | `--no-mcp` | do not deploy or register the MCP server |
 | `--no-telegram` | do not configure Telegram for this office |
+| `--contribute` | approve the policy and enable automatic public bug reports |
+| `--no-contribute` | disable automatic reports (the default) |
 | `--webhook-url <https-url>` | Telegram pushes to this URL (blank = long-poll) |
 | `--webhook-bind <addr>` | local bind (default `127.0.0.1:8080`; a busy default moves to the next free port) |
 | `--webhook-secret <s>` | Telegram `secret_token`; generated when absent |
@@ -295,8 +314,9 @@ asking. Output is colored only when stdout is a terminal; `NO_COLOR=1` or
 
 Defaults per feature: binary **yes**, MCP **yes**, Telegram **no** — or **yes**
 when `ZOLLY_TELEGRAM_TOKEN` is set — systemd **yes** when credentials exist.
-`--yes` therefore installs the office and the binary, and turns Telegram on
-only when a token is configured.
+Automatic public bug reports are **no**; `--yes` never opts in. `--yes`
+therefore installs the office and the binary, and turns Telegram on only when a
+token is configured.
 
 The chat id is not a second thing to look up: the installer asks Telegram
 (`getUpdates`) for the private chats that have messaged the bot and offers those

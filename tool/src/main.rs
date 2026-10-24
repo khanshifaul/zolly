@@ -7,6 +7,7 @@ mod queue;
 mod render;
 mod tg;
 mod nudge;
+mod report;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -214,8 +215,12 @@ async fn main() -> Result<()> {
     let Some(command) = cli.command else {
         return seat(&herdr, &root);
     };
+    let command_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "seat".to_string());
+    report::install_panic_hook(root.clone(), command_name.clone());
 
-    match command {
+    let result = match command {
         Commands::RegisterPane => register_pane(&herdr, &root),
         Commands::Init => init(&herdr, &root),
         Commands::Brief { json } => brief_cmd(&root, json),
@@ -294,7 +299,15 @@ async fn main() -> Result<()> {
         } => nudge::cmd_nudge(&root, min_interval_secs).await.map(|line| println!("{}", line)),
         Commands::Reload => reload(&herdr, &root),
         Commands::Doctor { json } => doctor(&root, json),
+    };
+
+    if let Err(e) = &result {
+        let detail = format!("{e:#}");
+        if report::is_reportable(&detail) {
+            report::maybe_report(&root, &command_name, &detail);
+        }
     }
+    result
 }
 
 /// Bare `zolly` — the entrypoint that seats the manager.
@@ -2849,6 +2862,22 @@ fn doctor(root: &std::path::Path, json: bool) -> Result<()> {
         }
         if failed == 0 {
             println!("doctor: all checks passed");
+        }
+    }
+
+    if failed > 0 {
+        let detail = checks
+            .iter()
+            .filter(|c| !c.ok)
+            .map(|c| format!("{}: {}", c.name, c.detail))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Doctor failures are usually environment/configuration, not kit
+        // defects. Only forward one when the detail names an internal
+        // failure (parse/run/panic), so a stopped systemd unit cannot become
+        // a public issue.
+        if report::is_reportable(&detail) {
+            report::maybe_report(root, "doctor", &detail);
         }
     }
 

@@ -6,5 +6,9 @@ founder = "{{FOUNDER}}"
 base_branch = "{{BASE_BRANCH}}"
 remote = "{{REMOTE}}"
 voice = false
+# Public automatic bug reports to khanshifaul/zolly. Policy:
+# https://github.com/khanshifaul/zolly/blob/main/CONTRIBUTING.md
+contribute = false
+contribution_policy = 1
 # The project's display name, used in the office's own greetings.
 project = "{{PROJECT_NAME}}"

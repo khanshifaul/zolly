@@ -7,6 +7,21 @@ The shape matters because an issue is read by people who do not have the
 office: no context from the chat, the worktree, or the session that produced
 it.
 
+## Automatic zolly reports
+
+There is one exception to the no-autonomous-issue rule: when the installer's
+contribution policy is approved (`contribute = true` in
+`.agents/zolly/config.toml`), the `zolly` runtime may create a public issue in
+`khanshifaul/zolly` for a defect in zolly itself. It reports only the zolly
+version, command name, OS/architecture, timestamp, and sanitized error or
+internal self-check detail. The reporter never sends project files, command arguments,
+prompts, environment variables, credentials, or customer data, and it
+deduplicates and rate-limits reports.
+
+That is the runtime's job, not an agent's. An agent must not hand-create an
+issue for the same error; if a report was skipped, say why (no `gh`, no auth,
+rate limit) and let the founder decide.
+
 ## When to file
 
 File only when all three are true:

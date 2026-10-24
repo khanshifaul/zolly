@@ -57,6 +57,7 @@ pub struct Office {
     pub founder: String,
     pub base_branch: String,
     pub remote: String,
+    pub contribute: bool,
 }
 
 impl Office {
@@ -75,6 +76,7 @@ impl Office {
         };
         let base = pick("base_branch", "ZOLLY_BASE_BRANCH", "main");
         let remote = pick("remote", "ZOLLY_REMOTE", "origin");
+        let contribute = pick("contribute", "ZOLLY_CONTRIBUTE", "false");
         Self {
             frequency: sanitize_frequency(&pick("frequency", "ZOLLY_FREQUENCY", &dir)),
             project: pick("project", "ZOLLY_PROJECT", &dir),
@@ -89,6 +91,10 @@ impl Office {
             } else {
                 "origin".to_string()
             },
+            contribute: matches!(
+                contribute.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
             root,
         }
     }
@@ -236,6 +242,7 @@ mod tests {
         assert_eq!(office.project, dir_name);
         assert_eq!(office.base_branch, "main");
         assert_eq!(office.remote, "origin");
+        assert!(!office.contribute);
         assert!(!office.config_exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -298,7 +305,7 @@ mod tests {
         let root = temp_office("dir-name");
         std::fs::write(
             root.join(CONFIG_PATH),
-            "frequency = \"other-office\"\nfounder = \"Founder\"\nproject = \"Other\"\nbase_branch = \"master\"\nremote = \"upstream\"\n",
+            "frequency = \"other-office\"\nfounder = \"Founder\"\nproject = \"Other\"\nbase_branch = \"master\"\nremote = \"upstream\"\ncontribute = true\n",
         )
         .unwrap();
         let office = Office::load(root.clone());
@@ -307,6 +314,7 @@ mod tests {
         assert_eq!(office.founder, "Founder");
         assert_eq!(office.base_branch, "master");
         assert_eq!(office.remote, "upstream");
+        assert!(office.contribute);
         assert_eq!(office.integration_ref(), "upstream/master");
         assert_eq!(office.integration_refs(), ["upstream/master".to_string(), "master".to_string()]);
         assert_eq!(office.agent("foreman"), "foreman-other-office");

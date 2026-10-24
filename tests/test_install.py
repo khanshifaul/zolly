@@ -121,6 +121,23 @@ class InstallTests(unittest.TestCase):
         config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
         self.assertIn('frequency = "app"', config)
         self.assertIn('founder = "Test"', config)
+        self.assertIn("contribute = false", config)
+
+    def test_contribute_flag_records_policy_consent(self):
+        repo = self.make_repo("app")
+        result = self.install(repo, "--contribute")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn("contribute = true", config)
+        self.assertIn("contribution_policy = 1", config)
+
+    def test_yes_alone_does_not_consent_to_reports(self):
+        repo = self.make_repo("app")
+        result = self.install(repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn("contribute = false", config)
+        self.assertIn("automatic issue reports: off", result.stdout + result.stderr)
 
     def test_second_install_without_force_refuses(self):
         repo = self.make_repo("app")
@@ -594,7 +611,7 @@ class InstallTests(unittest.TestCase):
         repo = self.make_repo("app")
         # MCP no, Telegram yes, token, ids, a bad URL, then blank for poll.
         code, text = self.run_in_pty(
-            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--no-contribute"],
             b"n\ny\n123456:ABCdef\n1,2\nhttp://x\n\n",
         )
         self.assertEqual(code, 0, text)
@@ -618,7 +635,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         # A re-run must read the remembered poll choice, not prompt again.
         code, text = self.run_in_pty(
-            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--force"],
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--force", "--no-contribute"],
             b"",
         )
         self.assertEqual(code, 0, text)
@@ -722,7 +739,7 @@ class InstallTests(unittest.TestCase):
         self.env["ZOLLY_TELEGRAM_TOKEN"] = "123456:ABCdef"
         # MCP no, Telegram yes (the token makes the default yes), ids yes.
         code, text = self.run_in_pty(
-            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--no-contribute"],
             b"n\ny\ny\n\n",
         )
         self.assertEqual(code, 0, text)
@@ -840,7 +857,7 @@ class InstallTests(unittest.TestCase):
     def test_interactive_answers_can_skip_features(self):
         repo = self.make_repo("app")
         code, text = self.run_in_pty(
-            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--no-contribute"],
             b"n\nn\n",
         )
         self.assertEqual(code, 0, text)
@@ -851,13 +868,27 @@ class InstallTests(unittest.TestCase):
         self.assertFalse((self.home / ".local" / "bin" / "zolly-mcp").exists())
         self.assertFalse((self.home / ".config" / "zolly" / "app" / "credentials").exists())
 
+    def test_contribution_policy_is_explicit_and_defaults_no(self):
+        repo = self.make_repo("app")
+        # Consent, MCP, Telegram. No --yes and no --contribute, so the policy
+        # prompt must appear and the default answer must leave reports off.
+        code, text = self.run_in_pty(
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            b"n\nn\nn\n",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertIn("contribution policy", text)
+        self.assertIn("automatic issue reports: off", text)
+        config = (repo / ".agents" / "zolly" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn("contribute = false", config)
+
 
     def install_with_pasted_token(self, name, payload):
         repo = self.make_repo(name)
         # MCP no, Telegram yes, token payload, allowed ids.
         answers = b"n\ny\n" + payload + b"1,2\n\n"
         code, text = self.run_in_pty(
-            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test"],
+            [str(INSTALL), str(repo), "--no-binary", "--no-systemd", "--founder", "Test", "--no-contribute"],
             answers,
         )
         self.assertEqual(code, 0, text)

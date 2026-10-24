@@ -29,7 +29,11 @@
 #   --no-binary         do not install the shared binary
 #   --no-mcp            do not deploy or register the MCP server
 #   --no-telegram       do not configure Telegram
-#   --yes, -y           accept every default; ask nothing
+#   --contribute        approve the contribution policy and enable automatic
+#                       public bug reports to khanshifaul/zolly
+#   --no-contribute     disable automatic reports (the default)
+#   --yes, -y           accept every default; ask nothing (never opts in to
+#                       automatic reports)
 #   --force             install even if the target already has .agents/
 #   --dry-run           print what would happen, change nothing
 #
@@ -126,6 +130,7 @@ DO_PONDER=1
 DO_BINARY=1
 DO_MCP=1
 DO_TELEGRAM=1           # 0 = --no-telegram: no credentials, no listener
+CONTRIBUTE=""           # empty = ask; 1 = approved; 0 = off
 ASSUME_YES=0
 BIN_STATE="skipped"
 MCP_STATE="skipped"
@@ -342,6 +347,8 @@ while [ $# -gt 0 ]; do
     --no-binary)    DO_BINARY=0; shift ;;
     --no-mcp)       DO_MCP=0; shift ;;
     --no-telegram)  DO_TELEGRAM=0; shift ;;
+    --contribute)    CONTRIBUTE=1; shift ;;
+    --no-contribute) CONTRIBUTE=0; shift ;;
     --webhook-url)  need_value "$@"; WEBHOOK_URL="$2"; WEBHOOK_DECIDED=1; shift 2 ;;
     --webhook-bind) need_value "$@"; WEBHOOK_BIND="$2"; WEBHOOK_BIND_EXPLICIT=1; shift 2 ;;
     --webhook-secret) need_value "$@"; WEBHOOK_SECRET="$2"; shift 2 ;;
@@ -479,6 +486,37 @@ if [ -z "$FOUNDER" ]; then
 fi
 FOUNDER=$(single_line "$FOUNDER")
 [ -n "$FOUNDER" ] || warn "no founder name — the office runs without Telegram greetings"
+
+# Automatic reports are opt-in and public. `--yes` deliberately does not
+# consent; only an interactive yes or the explicit --contribute flag does.
+if [ -z "$CONTRIBUTE" ]; then
+  if [ "$ASSUME_YES" -eq 1 ] || ! can_ask; then
+    CONTRIBUTE=0
+    note "automatic issue reports: off (use --contribute to opt in)"
+  else
+    if [ -f "$SCRIPT_DIR/CONTRIBUTING.md" ]; then
+      sed -n '1,80p' "$SCRIPT_DIR/CONTRIBUTING.md"
+    else
+      note "Automatic reports send zolly version, command, OS, and sanitized error text to khanshifaul/zolly."
+      note "They never send project files, command arguments, prompts, environment variables, or credentials."
+    fi
+    if [ "$(ask_yn "Approve the contribution policy and enable automatic public issue reports?" n)" = y ]; then
+      CONTRIBUTE=1
+    else
+      CONTRIBUTE=0
+    fi
+  fi
+fi
+if [ "$CONTRIBUTE" -eq 1 ]; then
+  ok "automatic issue reports: enabled"
+  if ! command -v gh >/dev/null 2>&1; then
+    warn "gh is not installed — reports will be skipped until it is"
+  elif ! gh auth status >/dev/null 2>&1; then
+    warn "gh is not authenticated — reports will be skipped until it is"
+  fi
+else
+  note "automatic issue reports: off"
+fi
 
 # ---------------------------------------------------------------------------
 # materialize the skeleton
@@ -661,11 +699,13 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$DRY_RUN" -ne 1 ]; then
   mkdir -p "$AGENTS_DIR/zolly"
+  if [ "$CONTRIBUTE" -eq 1 ]; then CONTRIBUTE_BOOL=true; else CONTRIBUTE_BOOL=false; fi
   cat > "$AGENTS_DIR/zolly/config.toml" <<EOF
 # Zolly office configuration for this project.
 #
 # Precedence: environment variable > this file > default.
-#   ZOLLY_FREQUENCY, ZOLLY_FOUNDER, ZOLLY_BASE_BRANCH, ZOLLY_REMOTE
+#   ZOLLY_FREQUENCY, ZOLLY_FOUNDER, ZOLLY_BASE_BRANCH, ZOLLY_REMOTE,
+#   ZOLLY_CONTRIBUTE
 #
 # The installer writes this file; edit it directly any time — nothing else
 # reads the values, this file does.
@@ -674,6 +714,10 @@ founder = "$(toml_escape "$FOUNDER")"
 base_branch = "$(toml_escape "$BASE_BRANCH")"
 remote = "$(toml_escape "$REMOTE")"
 voice = false
+# Public automatic bug reports to khanshifaul/zolly. Policy:
+# https://github.com/khanshifaul/zolly/blob/main/CONTRIBUTING.md
+contribute = $CONTRIBUTE_BOOL
+contribution_policy = 1
 # The project's display name, used in the office's own greetings.
 project = "$(toml_escape "$PROJECT_NAME")"
 EOF
@@ -827,6 +871,7 @@ EOF
 .agents/zolly/telegram_offset.txt
 .agents/zolly/telegram_serve.lock
 .agents/zolly/state.md
+.agents/zolly/auto-reports
 .agents/zolly/task_ledger.json
 .agents/zolly/task_ledger.json.tmp
 .agents/zolly/dead_letter.jsonl

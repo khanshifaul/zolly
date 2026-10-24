@@ -21,6 +21,7 @@ tool/target/
 
 # Office state written by `zolly` at seat time; machine-local, never commit it.
 .agents/zolly/state.md
+.agents/zolly/auto-reports
 
 # Never commit a token. Credentials live in ~/.config/zolly/<freq>/.
 .agents/zolly/.env
