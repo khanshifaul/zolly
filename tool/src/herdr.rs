@@ -650,6 +650,35 @@ impl HerdrClient {
         Ok(())
     }
 
+    /// The agent herdr reports on `pane_id`, if any. Its `name` is `None` for
+    /// a live but unnamed agent — a resumed omp whose name did not survive, or
+    /// one that has not run its seat's register step yet.
+    pub fn agent_on_pane(&self, pane_id: &str) -> Result<Option<HerdrAgent>> {
+        Ok(self
+            .agent_list()?
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id))
+    }
+
+    /// The pane hosting an agent in the tab with this label.
+    ///
+    /// The tab label is the stable handle when an agent's name is gone: herdr
+    /// keeps a resumed pane and the omp inside it, but not necessarily the
+    /// name that a listener prompts. Adopting the agent by label is what puts
+    /// a name back on it.
+    pub fn agent_pane_in_tab(&self, label: &str) -> Result<Option<String>> {
+        let Some(tab) = self.tab_list()?.into_iter().find(|tab| tab.label == label) else {
+            return Ok(None);
+        };
+        Ok(self
+            .pane_list()?
+            .into_iter()
+            .find(|pane| {
+                pane.tab_id.as_deref() == Some(tab.tab_id.as_str()) && pane.agent.is_some()
+            })
+            .map(|pane| pane.pane_id))
+    }
+
     pub fn agent_start(&self, name: &str, kind: &str, pane_id: &str, launch_args: &[String]) -> Result<()> {
         let mut command = Command::new("herdr");
         command.args([

@@ -316,7 +316,9 @@ async fn main() -> Result<()> {
 /// reads (`zolly@<office>`), the handle joins the office frequency while the
 /// pane is still a shell, and then omp takes over with the manager persona.
 /// Agent names cannot carry `@` (herdr allows `[a-z0-9_-]`), so the machine
-/// name `zolly-<office>` is set by `zolly register-pane` once omp is running.
+/// name `zolly-<office>` is set by `zolly register-pane` once omp is running —
+/// or by this function when it finds the pane already hosting the resumed
+/// manager.
 fn seat(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     let office = Office::load(root.to_path_buf());
     let persona = office.agent_md("zolly");
@@ -338,10 +340,20 @@ fn seat(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     }
 
     let pane = herdr.pane_current().context("Failed to get current pane")?;
-    if let Some(agent) = pane.agent.as_deref() {
-        anyhow::bail!(
-            "this pane already hosts '{agent}' — run `zolly register-pane` inside it, or seat from a shell"
+    if pane.agent.is_some() {
+        // A resumed seat: omp is already running here and herdr has only lost
+        // its name. Register it the way `zolly register-pane` does and hand
+        // back — a second omp on top of the live one would nest. The listener
+        // prompts `zolly-<office>`, so leaving it unnamed makes every Telegram
+        // message a dead letter.
+        adopt_manager_pane(herdr, &office, &pane)?;
+        println!(
+            "{} is already running in {} — registered it as {}",
+            pane.agent.as_deref().unwrap_or("an agent"),
+            pane.pane_id,
+            office.agent("zolly")
         );
+        return Ok(());
     }
 
     if let Some(tab) = pane.tab_id.as_deref() {
@@ -481,13 +493,60 @@ fn write_boot_state(
 fn register_pane(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
     let office = Office::load(root.to_path_buf());
     let pane = herdr.pane_current().context("Failed to get current pane")?;
-    herdr
-        .agent_rename(&pane.pane_id, &office.agent("zolly"))
-        .context("Failed to register pane as zolly")?;
+    adopt_manager_pane(herdr, &office, &pane)?;
+    println!("Registered pane {} as {}", pane.pane_id, office.agent("zolly"));
+    Ok(())
+}
+
+/// What to do with a pane that already hosts an agent, given the name herdr
+/// has for it.
+#[derive(Debug, PartialEq, Eq)]
+enum PaneAdoption {
+    /// The manager is live under its expected name.
+    AlreadyNamed,
+    /// A live but unnamed agent: the resumed manager. Name it.
+    Rename,
+    /// Another seat's named agent. Never steal it.
+    Refuse,
+}
+
+fn pane_adoption(hosted_name: Option<&str>, target: &str) -> PaneAdoption {
+    match hosted_name {
+        Some(name) if name == target => PaneAdoption::AlreadyNamed,
+        Some(_) => PaneAdoption::Refuse,
+        None => PaneAdoption::Rename,
+    }
+}
+
+/// Name the manager's agent in a pane that is already live, and label its tab.
+///
+/// This is the resumed-seat path: herdr keeps the pane and the omp inside it
+/// but loses the name the Telegram listener prompts, so the seat registers it
+/// instead of refusing. An unnamed agent is adopted; the manager's own name is
+/// idempotent; another seat's named agent is left alone and the caller fails.
+fn adopt_manager_pane(
+    herdr: &herdr::HerdrClient,
+    office: &Office,
+    pane: &herdr::HerdrPane,
+) -> Result<()> {
+    let target = office.agent("zolly");
+    let hosted = herdr
+        .agent_on_pane(&pane.pane_id)
+        .context("Failed to list agents")?;
+    let name = hosted.as_ref().and_then(|agent| agent.name.as_deref());
+    match pane_adoption(name, &target) {
+        PaneAdoption::AlreadyNamed => {}
+        PaneAdoption::Rename => herdr
+            .agent_rename(&pane.pane_id, &target)
+            .context("Failed to register pane as zolly")?,
+        PaneAdoption::Refuse => anyhow::bail!(
+            "this pane already hosts '{}' — seat zolly from its own pane, or a shell",
+            name.unwrap_or_default()
+        ),
+    }
     if let Some(tab) = pane.tab_id.as_deref() {
         let _ = herdr.tab_rename(tab, &format!("zolly@{}", office.frequency));
     }
-    println!("Registered pane {} as {}", pane.pane_id, office.agent("zolly"));
     Ok(())
 }
 
@@ -794,23 +853,11 @@ fn init(herdr: &herdr::HerdrClient, root: &std::path::Path) -> Result<()> {
 /// Rename an already-running omp in the seat's tab to the expected agent name.
 /// True only when the rename succeeded.
 fn adopt_seat(herdr: &herdr::HerdrClient, office: &Office, handle: &str, label: &str) -> bool {
-    let Ok(tabs) = herdr.tab_list() else {
-        return false;
-    };
-    let Some(tab) = tabs.iter().find(|tab| tab.label == label) else {
-        return false;
-    };
-    let Ok(panes) = herdr.pane_list() else {
-        return false;
-    };
-    let Some(pane) = panes
-        .iter()
-        .find(|pane| pane.tab_id.as_deref() == Some(tab.tab_id.as_str()) && pane.agent.is_some())
-    else {
+    let Ok(Some(pane)) = herdr.agent_pane_in_tab(label) else {
         return false;
     };
     herdr
-        .agent_rename(&pane.pane_id, &office.agent(handle))
+        .agent_rename(&pane, &office.agent(handle))
         .is_ok()
 }
 
@@ -3596,5 +3643,27 @@ mod seat_tests {
         assert!(names.contains(&"worker-t-a-twenty-character-task-id".to_string()));
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The resumed-seat decision: a live but unnamed agent is the manager whose
+    /// herdr name was lost; the manager's own name is idempotent; another
+    /// seat's named agent must never be stolen.
+    #[test]
+    fn an_unnamed_agent_is_adopted_but_another_seat_is_not() {
+        assert_eq!(
+            pane_adoption(None, "zolly-office"),
+            PaneAdoption::Rename,
+            "a resumed manager is live but unnamed"
+        );
+        assert_eq!(
+            pane_adoption(Some("zolly-office"), "zolly-office"),
+            PaneAdoption::AlreadyNamed,
+            "registering an already-named manager is idempotent"
+        );
+        assert_eq!(
+            pane_adoption(Some("worker-t-1"), "zolly-office"),
+            PaneAdoption::Refuse,
+            "a worker's pane must never be renamed into the manager"
+        );
     }
 }

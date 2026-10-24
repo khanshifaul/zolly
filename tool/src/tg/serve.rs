@@ -249,12 +249,58 @@ impl Dispatch for LiveDispatch {
     }
 
     fn prompt_agent(&self, name: &str, prompt: &str) -> Result<()> {
-        crate::herdr::HerdrClient::new(self.root.clone()).agent_prompt_only(name, prompt)
+        let herdr = crate::herdr::HerdrClient::new(self.root.clone());
+        match herdr.agent_prompt_only(name, prompt) {
+            Ok(()) => Ok(()),
+            Err(error) if is_agent_not_found(&error) => {
+                // A resumed manager seat: the pane is live, the name is not.
+                // Put the name back and deliver once; every later message
+                // takes the happy path.
+                match adopt_manager(&herdr, &self.root, name) {
+                    Ok(()) => herdr.agent_prompt_only(name, prompt),
+                    Err(recovery) => {
+                        eprintln!("prompt: {name}: {recovery:#}");
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn transcribe<'a>(&'a self, file_id: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move { transcribe_voice(&self.token, file_id).await })
     }
+}
+
+/// herdr's answer when the prompt target has no agent under that name: the CLI
+/// writes `{"error":{"code":"agent_not_found",…}}` to stderr, which
+/// `agent_prompt_only` wraps into the error text.
+fn is_agent_not_found(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("agent_not_found")
+}
+
+/// Put the manager's name back on its live pane after herdr lost it.
+///
+/// A resumed seat is a real omp in a real pane; only the name the listener
+/// prompts is gone. Renaming the pane's agent makes the prompt reachable
+/// again. Only this office's manager is recovered — a missing worker is a
+/// failure the caller must report, not something to paper over.
+fn adopt_manager(herdr: &crate::herdr::HerdrClient, root: &Path, name: &str) -> Result<()> {
+    let office = crate::office::Office::load(root.to_path_buf());
+    anyhow::ensure!(
+        office.agent("zolly") == name,
+        "{name} is not this office's manager"
+    );
+    let label = format!("zolly@{}", office.frequency);
+    let pane = herdr
+        .agent_pane_in_tab(&label)?
+        .with_context(|| format!("no agent named {name} and no live pane in {label}"))?;
+    herdr
+        .agent_rename(&pane, name)
+        .with_context(|| format!("Failed to register pane {pane} as {name}"))?;
+    eprintln!("prompt: {name} was live but unnamed — registered pane {pane}");
+    Ok(())
 }
 
 /// A [`Dispatch`] that records instead of sending. Drives the real
@@ -1229,6 +1275,22 @@ mod tests {
     #[test]
     fn guard_allows_a_bot_with_no_webhook() {
         assert!(guard_no_webhook(None).is_ok());
+    }
+
+    /// herdr reports a missing prompt target as an `agent_not_found` code in
+    /// a JSON error on stderr. This predicate is what gates the resumed-seat
+    /// recovery, so it has to match the real shape and nothing else.
+    #[test]
+    fn agent_not_found_is_recognised_from_herdr_stderr() {
+        let error = anyhow::anyhow!(
+            "herdr agent prompt failed: {{\"error\":{{\"code\":\"agent_not_found\",\
+             \"message\":\"agent target zolly-office not found\"}},\
+             \"id\":\"cli:agent:prompt\"}}"
+        );
+        assert!(is_agent_not_found(&error));
+        assert!(!is_agent_not_found(&anyhow::anyhow!(
+            "herdr agent prompt failed: timeout"
+        )));
     }
 
     /// The refusal must name the conflict and both ways out, not merely fail.
