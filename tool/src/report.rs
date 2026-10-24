@@ -312,7 +312,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out = sanitize(
             &dir,
-            "failed in /tmp/zolly-report-sanitize with ghp_abcdefghijklmnopqrstuvwxyz",
+            &format!(
+                "failed in /tmp/zolly-report-sanitize with {}",
+                concat!("ghp_", "abcdefghijklmnopqrstuvwxyz")
+            ),
         );
         assert!(out.contains("<office>"), "{out}");
         assert!(!out.contains("ghp_"), "{out}");
