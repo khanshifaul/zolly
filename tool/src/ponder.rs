@@ -239,7 +239,7 @@ fn wake_manager(root: &Path, note: &Path) -> Option<String> {
     if !agents.iter().any(|agent| agent.name.as_deref() == Some(name.as_str())) {
         // A just-seated manager is an unnamed omp in the `zolly@<freq>` tab;
         // §0 has not run yet. Register it here so the timer can reach it.
-        match office_manager_pane(&herdr, &office) {
+        match herdr.agent_pane_in_tab(&format!("zolly@{}", office.frequency)) {
             Ok(Some(pane)) => {
                 if let Err(error) = herdr.agent_rename(&pane, &name) {
                     return Some(format!("manager not woken: {error}"));
@@ -266,28 +266,6 @@ fn wake_manager(root: &Path, note: &Path) -> Option<String> {
         Ok(()) => Some(format!("woke {name}")),
         Err(error) => Some(format!("manager not woken: {error}")),
     }
-}
-
-/// The unnamed omp pane in the manager's tab, if it exists.
-fn office_manager_pane(
-    herdr: &crate::herdr::HerdrClient,
-    office: &crate::office::Office,
-) -> anyhow::Result<Option<String>> {
-    let tab_label = format!("zolly@{}", office.frequency);
-    let Some(tab) = herdr
-        .tab_list()?
-        .into_iter()
-        .find(|tab| tab.label == tab_label)
-    else {
-        return Ok(None);
-    };
-    Ok(herdr
-        .pane_list()?
-        .into_iter()
-        .find(|pane| {
-            pane.tab_id.as_deref() == Some(tab.tab_id.as_str()) && pane.agent.is_some()
-        })
-        .map(|pane| pane.pane_id))
 }
 
 fn recent_focus(root: &Path, focus: &str, now: u64) -> bool {
