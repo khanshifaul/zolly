@@ -1083,7 +1083,7 @@ fn bus_fallback(root: &std::path::Path, handle: &str, message: &str) -> Result<(
     let mut last = String::new();
     for name in bus_candidates(root, handle) {
         match std::process::Command::new("herdr")
-            .args(["agent", "prompt", &name, "--", &line])
+            .args(["agent", "prompt", &name, &line])
             .output()
         {
             Ok(out) if out.status.success() => {
