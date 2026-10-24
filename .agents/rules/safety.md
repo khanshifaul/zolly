@@ -57,6 +57,14 @@ attribute every action to them.
 - "Live" means the production service serves it — verify by fetching the live
   URL, not by observing a merge.
 
+## Publishing
+
+A public GitHub issue, comment, pull-request description, or any other public
+post is publishing. Create one only when the founder names that specific issue
+or comment; otherwise prepare the text and ask. Follow
+`.agents/rules/issue-contract.md` for the body shape, duplicate search, and
+redaction rules.
+
 ## Gates
 
 `gate: human` means the founder's decision. **The founder** approves only on an

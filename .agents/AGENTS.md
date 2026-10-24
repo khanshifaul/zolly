@@ -24,7 +24,8 @@ project-specific lives in `.agents/rules/project.md` and
 │   ├── safety.md          # destructive commands, secrets, external systems, gates
 │   ├── csv-conventions.md # how CSVs are written and handed over here
 │   ├── result-contract.md # what a results/<task>.md has to contain
-│   └── queue-contract.md  # what a queue/<task>.md brief has to contain
+│   ├── queue-contract.md  # what a queue/<task>.md brief has to contain
+│   └── issue-contract.md  # public GitHub issue shape and filing procedure
 ├── prompts/
 │   ├── task_triage.md     # small / large / gate — decide, then act
 │   └── post_task_reflect.md   # what did I learn that the next agent would re-derive?
@@ -149,6 +150,7 @@ register; a file with no row is a file nobody opens.
 | `rules/csv-conventions.md` | any worker writing a CSV | named in `rules/workflows.md` and `worker/generic.md` |
 | `rules/result-contract.md` | every worker and reviewer | named in `rules/workflows.md`, `worker/generic.md`, `reviewer/agent.md` |
 | `rules/queue-contract.md` | the manager and the foreman | named in `rules/workflows.md`, the `zolly` and `foreman` personas, and `zolly/skills/close-the-day/SKILL.md` |
+| `rules/issue-contract.md` | any agent filing a public GitHub issue | named in `rules/workflows.md` |
 | `prompts/task_triage.md` | the manager, on each instruction | named in `zolly/agent.md` |
 | `prompts/post_task_reflect.md` | any agent closing a unit of work | named in `zolly/rules/extensions.md` and `worker/generic.md` |
 | `prompts/curiosity.md` | the manager, when the queue is empty | named in `rules/workflows.md` and `zolly/agent.md` |

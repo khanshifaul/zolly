@@ -87,6 +87,16 @@ it one file at a time.
 
 Below ~20 items, or a question needing cross-item reasoning, read directly.
 
+## Filing a GitHub issue
+
+An issue is public publishing, not an office task. Read
+`.agents/rules/issue-contract.md` before creating one. File only when the
+founder named that issue, or the task carries an approved `gate: human`; search
+existing issues and PRs first; use a body file with Problem, Reproduction,
+Expected, Actual, Scope, and Evidence. Never put a secret, customer data, or an
+internal office task in a public issue. The zolly kit's repository is
+`khanshifaul/zolly`; a project issue goes to the project's own remote.
+
 ## Working a task (worker)
 
 1. Do the work on the task branch. The office keeps no separate in-flight state
