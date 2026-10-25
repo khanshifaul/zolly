@@ -35,6 +35,29 @@ pub struct Message {
     pub date: i64,
     pub text: Option<String>,
     pub voice: Option<Voice>,
+    /// Set when the founder attached text to a file instead of sending bare text.
+    pub caption: Option<String>,
+    pub document: Option<Document>,
+    pub photo: Option<Vec<PhotoSize>>,
+}
+
+/// A file sent to the bot. Telegram delivers it as a `message` with
+/// `document` set; `file_id` is the only handle `getFile` needs.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct Document {
+    pub file_id: String,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+/// One size of a sent photo. Telegram sends several; the last is the largest.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct PhotoSize {
+    pub file_id: String,
+    pub width: i64,
+    pub height: i64,
 }
 
 #[allow(dead_code)]
