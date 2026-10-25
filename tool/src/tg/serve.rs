@@ -27,7 +27,7 @@ use super::config::{
 use super::format::{is_ask, normalise_keyword};
 use super::handlers;
 use super::send::{send_message, transcribe_voice};
-use super::types::{TelegramResponse, Update};
+use super::types::{Message, TelegramResponse, Update};
 use crate::render;
 
 /// Tracks pending Telegram messages waiting for Zolly's tool reply.
@@ -224,6 +224,8 @@ pub trait Dispatch: Send + Sync {
     fn prompt_agent(&self, name: &str, prompt: &str) -> Result<()>;
     /// Download a voice note and transcribe it locally, returning the transcript.
     fn transcribe<'a>(&'a self, file_id: &'a str) -> BoxFuture<'a, Result<String>>;
+    /// Download a file by `file_id` to `dest`, returning the bytes written.
+    fn download<'a>(&'a self, file_id: &'a str, dest: &'a Path) -> BoxFuture<'a, Result<u64>>;
 }
 
 /// The production [`Dispatch`]: a real Telegram message, a real herdr prompt, a
@@ -270,6 +272,10 @@ impl Dispatch for LiveDispatch {
 
     fn transcribe<'a>(&'a self, file_id: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move { transcribe_voice(&self.token, file_id).await })
+    }
+
+    fn download<'a>(&'a self, file_id: &'a str, dest: &'a Path) -> BoxFuture<'a, Result<u64>> {
+        Box::pin(async move { super::send::download_file(&self.token, file_id, dest).await })
     }
 }
 
@@ -344,6 +350,164 @@ impl Dispatch for RecordingDispatch {
     fn transcribe<'a>(&'a self, _file_id: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async { anyhow::bail!("RecordingDispatch does not transcribe") })
     }
+
+    fn download<'a>(&'a self, this_file_id: &'a str, dest: &'a Path) -> BoxFuture<'a, Result<u64>> {
+        let dest = dest.to_path_buf();
+        let body = format!("recorded {this_file_id}");
+        Box::pin(async move {
+            if let Some(dir) = dest.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&dest, body.as_bytes())?;
+            Ok(body.len() as u64)
+        })
+    }
+}
+
+/// The file attached to a message, if it is a file rather than bare text:
+/// `(file_id, suggested name)`.
+///
+/// A `document` keeps the name the sender gave it. A `photo` arrives as several
+/// sizes with no name at all, so the largest size is saved under a name built
+/// from the message date and id. Anything else returns `None` and the caller
+/// keeps its old behaviour.
+fn inbound_file(message: &Message) -> Option<(String, String)> {
+    if let Some(doc) = &message.document {
+        let name = doc
+            .file_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("document-{}-{}", message.date, message.message_id));
+        return Some((doc.file_id.clone(), sanitize_file_name(&name)));
+    }
+    if let Some(largest) = message.photo.as_ref().and_then(|sizes| sizes.last()) {
+        return Some((
+            largest.file_id.clone(),
+            format!("photo-{}-{}.jpg", message.date, message.message_id),
+        ));
+    }
+    None
+}
+
+/// Make a sender-supplied file name safe to write: last path component only,
+/// no traversal, no leading dot, a bounded length. A name that reduces to
+/// nothing becomes `file` rather than an empty path.
+fn sanitize_file_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw).trim();
+    let cleaned: String = base
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' | ' ' => c,
+            _ => '_',
+        })
+        .collect();
+    let trimmed = cleaned.trim_start_matches(['.', ' ']).trim();
+    if trimmed.is_empty() {
+        return "file".to_string();
+    }
+    trimmed.chars().take(120).collect()
+}
+
+/// Where a founder's file lands: the desktop's Downloads directory when the
+/// system defines one, else `$HOME/Downloads`, else the office's own folder.
+fn download_dir(root: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("ZOLLY_DOWNLOAD_DIR").filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    dirs::download_dir()
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Downloads")))
+        .unwrap_or_else(|| root.join(".agents/zolly/downloads"))
+}
+
+/// A destination that never overwrites an earlier download: `name.ext`, then
+/// `name-1.ext`, `name-2.ext`, …
+fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let path = Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str());
+    for n in 1..1000 {
+        let candidate = match ext {
+            Some(ext) => dir.join(format!("{stem}-{n}.{ext}")),
+            None => dir.join(format!("{stem}-{n}")),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    let stamp = chrono::Utc::now().timestamp_millis();
+    dir.join(format!("{stem}-{stamp}.{}", ext.unwrap_or("bin")))
+}
+
+
+/// The reply for a failed download. Telegram's Bot API refuses `getFile` for a
+/// file over 20 MB ("Bad Request: file is too big") and that wording does not
+/// tell the founder what to do next, so it is replaced with the limit and the
+/// two ways around it. Every other failure keeps Telegram's own text.
+fn download_failure(file_name: &str, raw: &str) -> String {
+    if raw.contains("file is too big") {
+        format!(
+            "Download failed: {file_name} is over Telegram's 20 MB bot-download limit. \
+             Split it into parts under 20 MB and send them in one message, or send a link \
+             the office can fetch."
+        )
+    } else {
+        format!("Download failed: {raw}")
+    }
+}
+
+/// Save one attached file and answer with where it went. A download failure is
+/// reported to the chat instead of being swallowed, so a broken token or a
+/// removed file never looks like a successful save.
+async fn save_inbound(
+    dispatch: &dyn Dispatch,
+    dir: &Path,
+    chat_id: i64,
+    message: &Message,
+    file_id: &str,
+    file_name: &str,
+) -> Result<()> {
+    if let Err(e) = fs::create_dir_all(dir) {
+        dispatch
+            .send(
+                chat_id,
+                &format!("Download failed: cannot create {}: {e}", dir.display()),
+            )
+            .await?;
+        return Ok(());
+    }
+
+    let dest = unique_path(dir, file_name);
+    match dispatch.download(file_id, &dest).await {
+        Ok(bytes) => {
+            let caption = message.caption.as_deref().map(str::trim).unwrap_or("");
+            let note = if caption.is_empty() {
+                String::new()
+            } else {
+                format!(" — {caption}")
+            };
+            dispatch
+                .send(
+                    chat_id,
+                    &format!(
+                        "Saved {file_name}{note}\n{}\n({bytes} bytes)",
+                        dest.display()
+                    ),
+                )
+                .await?;
+        }
+        Err(e) => {
+            dispatch
+                .send(chat_id, &download_failure(file_name, &redact(&format!("{e:#}"))))
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +557,15 @@ pub(super) async fn handle_update(
                         return Ok(());
                     }
                 }
+            } else if let Some((file_id, file_name)) = inbound_file(&message) {
+                // A document or photo carries no `text`, so without this branch
+                // Telegram's delivery was silently discarded (measured
+                // 2026-10-25: two files sent to the bot, nothing on disk, no
+                // log line). Save it where the founder looks for downloads and
+                // answer with the path.
+                let dir = download_dir(root);
+                save_inbound(dispatch, &dir, chat_id, &message, &file_id, &file_name).await?;
+                return Ok(());
             } else {
                 return Ok(());
             }
@@ -1370,5 +1543,139 @@ mod tests {
             1,
             "decline must appear once, not once per synonym"
         );
+    }
+
+    #[test]
+    fn a_file_name_can_never_escape_the_download_directory() {
+        assert_eq!(sanitize_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_file_name("a/b\\c.pdf"), "c.pdf");
+        assert_eq!(sanitize_file_name("..."), "file");
+        assert_eq!(sanitize_file_name("  .hidden.txt "), "hidden.txt");
+        assert!(!sanitize_file_name(&"x".repeat(400)).contains('/'));
+        assert!(sanitize_file_name(&"x".repeat(400)).len() <= 120);
+    }
+
+    #[test]
+    fn a_document_names_itself_and_a_photo_gets_a_generated_name() {
+        let document: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 7, "date": 100,
+                "from": {"id": 5, "is_bot": false, "first_name": "F"},
+                "chat": {"id": 5, "type": "private"},
+                "document": {"file_id": "DOC", "file_name": "report.pdf"}
+            }
+        }))
+        .expect("document update parses");
+        assert_eq!(
+            inbound_file(&document.message.expect("message")),
+            Some(("DOC".to_string(), "report.pdf".to_string()))
+        );
+
+        let photo: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 2,
+            "message": {
+                "message_id": 8, "date": 101,
+                "from": {"id": 5, "is_bot": false, "first_name": "F"},
+                "chat": {"id": 5, "type": "private"},
+                "photo": [
+                    {"file_id": "SMALL", "width": 90, "height": 90},
+                    {"file_id": "LARGE", "width": 1280, "height": 1280}
+                ]
+            }
+        }))
+        .expect("photo update parses");
+        assert_eq!(
+            inbound_file(&photo.message.expect("message")),
+            Some(("LARGE".to_string(), "photo-101-8.jpg".to_string())),
+            "the largest size is the one saved"
+        );
+
+        let text: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 3,
+            "message": {
+                "message_id": 9, "date": 102, "text": "hello",
+                "from": {"id": 5, "is_bot": false, "first_name": "F"},
+                "chat": {"id": 5, "type": "private"}
+            }
+        }))
+        .expect("text update parses");
+        assert!(inbound_file(&text.message.expect("message")).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_file_message_is_saved_and_answered_instead_of_dropped() {
+        // The regression: a document carries no `text`, and the handler used to
+        // return without saving or replying. Measured 2026-10-25 — files sent
+        // to the bot left nothing on disk and produced no log line.
+        let dir = std::env::temp_dir().join(format!("zolly-inbound-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let dispatch = RecordingDispatch::default();
+        let update: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 4,
+            "message": {
+                "message_id": 11, "date": 200,
+                "from": {"id": 5, "is_bot": false, "first_name": "F"},
+                "chat": {"id": 5, "type": "private"},
+                "caption": "for the office",
+                "document": {"file_id": "DOC", "file_name": "notes.txt"}
+            }
+        }))
+        .expect("document update parses");
+
+        // Drive the real handler with the download directory redirected into a
+        // temp folder, so the test never writes to the user's Downloads.
+        unsafe { std::env::set_var("ZOLLY_DOWNLOAD_DIR", &dir) };
+        let result = handle_update(&dispatch, &dir, &[5], update).await;
+        unsafe { std::env::remove_var("ZOLLY_DOWNLOAD_DIR") };
+        result.expect("handling a document must not fail");
+
+        let saved = dir.join("notes.txt");
+        assert_eq!(
+            fs::read_to_string(&saved).expect("the document is on disk"),
+            "recorded DOC"
+        );
+        let sent = dispatch.sent();
+        assert_eq!(sent.len(), 1, "one reply per file");
+        assert!(sent[0].1.contains("Saved notes.txt"), "{}", sent[0].1);
+        assert!(sent[0].1.contains("for the office"), "{}", sent[0].1);
+        assert!(
+            sent[0].1.contains(&saved.display().to_string()),
+            "the reply must say where the file went: {}",
+            sent[0].1
+        );
+
+        // A second file with the same name must not overwrite the first.
+        let update: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 5,
+            "message": {
+                "message_id": 12, "date": 201,
+                "from": {"id": 5, "is_bot": false, "first_name": "F"},
+                "chat": {"id": 5, "type": "private"},
+                "document": {"file_id": "DOC2", "file_name": "notes.txt"}
+            }
+        }))
+        .expect("second document update parses");
+        unsafe { std::env::set_var("ZOLLY_DOWNLOAD_DIR", &dir) };
+        handle_update(&dispatch, &dir, &[5], update)
+            .await
+            .expect("second document");
+        unsafe { std::env::remove_var("ZOLLY_DOWNLOAD_DIR") };
+        assert!(dir.join("notes-1.txt").exists(), "no overwrite");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_oversized_file_says_the_limit_and_how_around_it() {
+        let reply = download_failure("big.xapk", "getFile failed: Bad Request: file is too big");
+        assert!(reply.contains("big.xapk"), "{reply}");
+        assert!(reply.contains("20 MB"), "{reply}");
+        assert!(reply.contains("the office can fetch"), "{reply}");
+
+        // Any other failure keeps Telegram's own words.
+        let other = download_failure("x.pdf", "getFile failed: 400 not found");
+        assert_eq!(other, "Download failed: getFile failed: 400 not found");
     }
 }
