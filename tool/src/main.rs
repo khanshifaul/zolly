@@ -136,6 +136,12 @@ enum Commands {
     TelegramWebhookInfo,
     /// Remove the Telegram webhook (`deleteWebhook`) so getUpdates works again.
     TelegramDeleteWebhook,
+    /// Print the recorded Telegram message reactions, newest last, as JSON lines.
+    TelegramReactions {
+        /// How many of the most recent records to print.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     TelegramSendFile {
         #[arg(long)]
         file: String,
@@ -274,6 +280,7 @@ async fn main() -> Result<()> {
         }
         Commands::TelegramWebhookInfo => tg::webhook::cmd_webhook_info().await,
         Commands::TelegramDeleteWebhook => tg::webhook::cmd_delete_webhook().await,
+        Commands::TelegramReactions { limit } => tg::serve::cmd_reactions(&root, limit),
         Commands::TelegramSendFile { file, caption, chat_id } => {
             tg::cmd_send_file(&root, &file, caption, chat_id).await
         }
