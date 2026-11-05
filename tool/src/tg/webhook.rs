@@ -400,7 +400,7 @@ pub async fn cmd_set_webhook(url: &str, secret: Option<String>) -> Result<()> {
     // observe exactly the same update kinds.
     let mut body = serde_json::json!({
         "url": url,
-        "allowed_updates": ["message", "voice", "poll_answer"],
+        "allowed_updates": ["message", "voice", "poll_answer", "message_reaction"],
     });
     if let Some(s) = secret {
         body["secret_token"] = serde_json::Value::String(s);

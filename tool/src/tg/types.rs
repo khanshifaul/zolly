@@ -84,14 +84,41 @@ pub struct PollAnswer {
     pub option_ids: Vec<i32>,
 }
 
-/// The only update kinds we subscribe to are `message` and `poll_answer`
-/// (see the `allowed_updates` parameter in serve). Other kinds are never
-/// requested, so they are not modeled.
+/// One reaction on a message: Telegram sends the emoji as a `ReactionType`
+/// whose `type` is `emoji`, `custom_emoji` or `paid`.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct ReactionType {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub emoji: Option<String>,
+}
+
+/// `message_reaction` — someone added, changed or removed a reaction.
+/// `old_reaction` and `new_reaction` are the state before and after, so a
+/// removal is an empty `new_reaction` rather than a separate update shape.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct MessageReaction {
+    pub chat: Chat,
+    pub message_id: i64,
+    pub user: Option<User>,
+    pub date: i64,
+    #[serde(default)]
+    pub old_reaction: Vec<ReactionType>,
+    #[serde(default)]
+    pub new_reaction: Vec<ReactionType>,
+}
+
+/// The update kinds we subscribe to are `message`, `voice`, `poll_answer` and
+/// `message_reaction` (see the `allowed_updates` parameter in serve and
+/// webhook). Other kinds are never requested, so they are not modeled.
 #[derive(Debug, Deserialize)]
 pub struct Update {
     pub update_id: i64,
     pub message: Option<Message>,
     pub poll_answer: Option<PollAnswer>,
+    pub message_reaction: Option<MessageReaction>,
 }
 
 #[derive(Debug, Deserialize)]

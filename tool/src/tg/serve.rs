@@ -27,7 +27,7 @@ use super::config::{
 use super::format::{is_ask, normalise_keyword};
 use super::handlers;
 use super::send::{send_message, transcribe_voice};
-use super::types::{Message, TelegramResponse, Update};
+use super::types::{Message, MessageReaction, ReactionType, TelegramResponse, Update};
 use crate::render;
 
 /// Tracks pending Telegram messages waiting for Zolly's tool reply.
@@ -701,6 +701,69 @@ pub(super) async fn handle_update(
             .context("Failed to prompt Zolly agent on poll answer")?;
     }
 
+    if let Some(reaction) = update.message_reaction {
+        let user_id = reaction.user.as_ref().map(|user| user.id).unwrap_or(0);
+        if !allowed_ids.contains(&user_id) {
+            eprintln!("Ignored reaction from unauthorized user: {}", user_id);
+            return Ok(());
+        }
+        // Recorded, not answered: a ✅ on a delivered short is a signal for the
+        // operator, and replying to every emoji would turn the channel to noise.
+        record_reaction(root, &reaction);
+    }
+
+    Ok(())
+}
+
+/// Append a reaction change to `.agents/zolly/reactions.jsonl`, beside the
+/// dead-letter file. Append-only JSONL so the history survives restarts and a
+/// torn write costs one line, never the file.
+pub(super) fn record_reaction(root: &Path, reaction: &MessageReaction) {
+    let path = root.join(".agents/zolly/reactions.jsonl");
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let names = |list: &[ReactionType]| -> Vec<String> {
+        list.iter()
+            .map(|reaction| match &reaction.emoji {
+                Some(emoji) => emoji.clone(),
+                None => reaction.kind.clone(),
+            })
+            .collect()
+    };
+    let line = serde_json::json!({
+        "at": chrono::Utc::now().to_rfc3339(),
+        "chat_id": reaction.chat.id,
+        "message_id": reaction.message_id,
+        "user_id": reaction.user.as_ref().map(|user| user.id),
+        "date": reaction.date,
+        "old": names(&reaction.old_reaction),
+        "new": names(&reaction.new_reaction),
+    });
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{}", line);
+    }
+}
+
+/// `telegram-reactions` — the recorded reactions, newest last, one JSON object
+/// per line. Read-only and offline: the file is the store.
+pub fn cmd_reactions(root: &Path, limit: usize) -> Result<()> {
+    let path = root.join(".agents/zolly/reactions.jsonl");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(_) => {
+            println!("No reactions recorded yet ({}).", path.display());
+            return Ok(());
+        }
+    };
+    let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    if lines.is_empty() {
+        println!("No reactions recorded yet ({}).", path.display());
+        return Ok(());
+    }
+    for line in lines.iter().rev().take(limit).rev() {
+        println!("{}", line);
+    }
     Ok(())
 }
 
@@ -781,7 +844,7 @@ async fn fetch_updates(
     // offset=0 (fresh start) this queries offset=1, which is correct —
     // Telegram's first update_id is always > 0.
     let url = format!(
-        "{}?offset={}&timeout={}&allowed_updates=[\"message\",\"voice\",\"poll_answer\"]",
+        "{}?offset={}&timeout={}&allowed_updates=[\"message\",\"voice\",\"poll_answer\",\"message_reaction\"]",
         api_url(token, "getUpdates"),
         offset + 1,
         POLL_TIMEOUT_SECS
@@ -1214,6 +1277,7 @@ mod tests {
                 update_id: *id,
                 message: None,
                 poll_answer: None,
+                message_reaction: None,
             })
             .collect()
     }
@@ -1815,6 +1879,106 @@ mod tests {
         let sent = dispatch.0.lock();
         assert_eq!(sent.len(), 1, "the failure is reported to the chat");
         assert!(sent[0].1.contains("Download failed"), "{}", sent[0].1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reactions
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod reaction_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("zolly-reaction-{}-{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn reaction_update(message_id: i64, user_id: i64, emoji: &str) -> Update {
+        serde_json::from_value(serde_json::json!({
+            "update_id": message_id,
+            "message_reaction": {
+                "chat": {"id": user_id, "type": "private"},
+                "message_id": message_id,
+                "user": {"id": user_id, "is_bot": false, "first_name": "Shifaul"},
+                "date": 0,
+                "old_reaction": [],
+                "new_reaction": [{"type": "emoji", "emoji": emoji}]
+            }
+        }))
+        .expect("a reaction update deserializes")
+    }
+
+    /// A reaction lands in the store and nothing is sent: answering every emoji
+    /// would make the channel unusable.
+    #[tokio::test]
+    async fn a_reaction_is_recorded_and_never_answered() {
+        let dir = scratch("recorded");
+        let dispatch = RecordingDispatch::default();
+
+        handle_update(&dispatch, &dir, &[42], reaction_update(2130, 42, "🔥"))
+            .await
+            .expect("a reaction is accepted");
+
+        let text = fs::read_to_string(dir.join(".agents/zolly/reactions.jsonl"))
+            .expect("the reaction file is written");
+        assert!(text.contains("\"message_id\":2130"), "{}", text);
+        assert!(text.contains("🔥"), "{}", text);
+        assert!(dispatch.sent().is_empty(), "a reaction must not be answered");
+        assert!(dispatch.prompted().is_empty(), "a reaction is not an agent turn");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Only the allowlisted founder may write to the store.
+    #[tokio::test]
+    async fn a_reaction_from_a_stranger_is_ignored() {
+        let dir = scratch("stranger");
+        let dispatch = RecordingDispatch::default();
+
+        handle_update(&dispatch, &dir, &[42], reaction_update(2131, 99, "🔥"))
+            .await
+            .expect("an ignored reaction is not an error");
+
+        assert!(
+            !dir.join(".agents/zolly/reactions.jsonl").exists(),
+            "a stranger's reaction must not be recorded"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A removal is the same update with an empty `new_reaction`, and the record
+    /// has to show that rather than dropping the line.
+    #[tokio::test]
+    async fn a_removed_reaction_is_recorded_as_empty() {
+        let dir = scratch("removed");
+        let update: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 7,
+            "message_reaction": {
+                "chat": {"id": 42, "type": "private"},
+                "message_id": 2132,
+                "user": {"id": 42, "is_bot": false, "first_name": "Shifaul"},
+                "date": 0,
+                "old_reaction": [{"type": "emoji", "emoji": "🔥"}],
+                "new_reaction": []
+            }
+        }))
+        .expect("a removal deserializes");
+
+        handle_update(&RecordingDispatch::default(), &dir, &[42], update)
+            .await
+            .expect("a removal is accepted");
+
+        let text = fs::read_to_string(dir.join(".agents/zolly/reactions.jsonl"))
+            .expect("the reaction file is written");
+        assert!(text.contains("\"new\":[]"), "{}", text);
 
         let _ = fs::remove_dir_all(&dir);
     }
