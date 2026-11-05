@@ -58,8 +58,11 @@ are cut from the base branch.
 - **POSIX shell + curl** — the one-line installer.
 - **Rust toolchain (cargo)** — only to build the shared binary. Use
   `--no-binary` with a preinstalled `~/.local/bin/zolly` to skip it.
-- **omp** — the agent harness that runs the manager, foreman, worker and
-  reviewer personas. zolly does not ship a model or a coding agent.
+- **omp** — the agent harness the kit pins for the manager, foreman, worker and
+  reviewer personas. zolly does not ship a model or a coding agent. herdr can
+  start 24 agent kinds, so another harness can be substituted in a pane, but
+  the kit's integrations (`@`-file launch arguments, `/collab`, the idle/done
+  checks) are omp-shaped — see [COMPARISON.md §3.6](COMPARISON.md#36-model-and-harness-choice).
 - **herdr** — the pane, tab and worktree server the seats run in.
 - **radio (optional)** — the AgentRadio bus. When installed it is the first
   choice for `zolly init` and `zolly bus`; when absent, seats still start and

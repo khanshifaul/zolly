@@ -21,7 +21,7 @@ The office is Linux-first by construction, not by design. Nothing in the control
 | 3 | `systemctl` | `tool/src/main.rs:2730-2754` (doctor), `install.sh:1304-1390` (unit writing) | No systemd | Service backend behind one interface: systemd on Linux, Scheduled Task on Windows |
 | 4 | `timeout 600 sh -c` | `tool/src/main.rs:1277` (`verify` runs the project test command) | Neither `timeout` nor `sh` exists | Platform runner: `sh -c` on unix, `cmd.exe /C` on Windows; enforce the deadline with a job object (`taskkill /T`) |
 | 5 | POSIX shell scripts | `install.sh`, `test.sh`, `.agents/shared/memory`, `.agents/zolly/mcp/install.sh` | No `sh`/`bash` | Move the logic into the binary (`zolly memory`, `zolly mcp install`), add `install.ps1`, port `test.sh` to Python |
-| 6 | Seat runtime | `herdr` pane/tab/worktree server, `omp` harness | Windows builds unconfirmed; both are terminal-oriented | Confirm builds in W1; otherwise Windows gets the control plane and seats stay in WSL2 |
+| 6 | Seat runtime | `herdr` pane/tab/worktree server, `omp` harness (pinned default; herdr starts 24 kinds) | Windows builds unconfirmed; all are terminal-oriented | Confirm builds in W1; a herdr kind that runs on Windows can stand in for omp; otherwise Windows gets the control plane and seats stay in WSL2 |
 | 7 | Voice | `tool/src/tg/send.rs` (`ffmpeg`, `voxtype`) | Linux binaries | `#[cfg(unix)]` the voice path; document voice as Linux-only |
 
 ### Phases
@@ -82,4 +82,4 @@ The office is Linux-first by construction, not by design. Nothing in the control
 
 ## After Windows
 
-The rest of the priority order lives in [COMPARISON.md §10](COMPARISON.md#10-what-would-make-zolly-competitive). In order: a harness seam (ACP or `--worker-cmd`) so zolly can orchestrate more than omp; an enforced gate (branch protection + required checks + a worker sandbox); read-only web/mobile status; reliability evals; task fan-out.
+The rest of the priority order lives in [COMPARISON.md §10](COMPARISON.md#10-what-would-make-zolly-competitive). In order: a configurable seat kind (`herdr` already starts 24; omp is the pinned default, with the omp-shaped integrations moved behind a harness trait); an enforced gate (branch protection + required checks + a worker sandbox); read-only web/mobile status; reliability evals; task fan-out.
