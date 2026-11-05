@@ -15,7 +15,7 @@
 | What is OpenBot best at? | A polished local-first desktop workspace for a named agent team: 12 provider runtimes behind one UI, per-agent workspaces, queues, an embedded browser, agent-to-agent messaging, and desktop/mobile clients on macOS, Windows and Linux. |
 | Is zolly competing with OpenBot? | Partly, and more directly than with any tool above except Cindy. Both run agents locally with persistent workspaces. OpenBot is a **product** (Electron app, SQLite, accounts, mobile); zolly is a **repo-local control plane** with a reviewer gate and no UI. |
 | Closest competitors to zolly | OpenBot and Cindy (local multi-agent workspaces), Bernstein (governance/audit), Agent Orchestrator (worktree supervision UX), OpenHands Agent Canvas (self-hosted control center). |
-| Biggest zolly gaps | Procedural rather than enforced merge gate; no sandbox; Linux/omp/herdr coupling and no Windows support (planned — see [ROADMAP.md](ROADMAP.md)); no cloud or mobile app; single-maintainer maturity. |
+| Biggest zolly gaps | Procedural rather than enforced merge gate; no sandbox; Linux/systemd coupling, an omp-pinned seat default (herdr supports 24 kinds) and no Windows support (planned — see [ROADMAP.md](ROADMAP.md)); no cloud or mobile app; single-maintainer maturity. |
 
 The rest of this report defends those claims with source evidence. Judgments about relative quality are architectural, not benchmark results.
 
@@ -23,7 +23,7 @@ The rest of this report defends those claims with source evidence. Judgments abo
 
 ### zolly
 
-zolly is a **per-project agent office**. The repository root gets a `.agents/` tree holding rules, personas, prompts, memory, queue/result contracts, an HR tool, skills and an MCP server. A shared Rust binary, `zolly`, orchestrates the seats. The agents themselves run in **omp**; zolly is the control plane, not a model or a coding harness.
+zolly is a **per-project agent office**. The repository root gets a `.agents/` tree holding rules, personas, prompts, memory, queue/result contracts, an HR tool, skills and an MCP server. A shared Rust binary, `zolly`, orchestrates the seats. The agents run in **herdr** panes. The seat *kind* is a herdr parameter — 24 kinds, including codex, claude, gemini, grok, opencode and omp — and the kit pins **omp** by default in `tool/src/main.rs` (`open_seat`) and in the foreman's `herdr agent start … --kind omp` instructions. zolly is the control plane, not a model or a coding harness.
 
 The documented chain is:
 
@@ -33,7 +33,7 @@ founder → Zolly (manager) → foreman (team leader) → worker → reviewer �
 
 The reviewer is the only door to `main`. Money, production, publishing and customers are `gate: human`. State is git-native: a task branch, a worktree, `.agents/results/<id>.md`, and a PR. Runtime directories are gitignored; `.agents/memory/` is committed on purpose.
 
-Interfaces are the terminal (omp/herdr panes), optional Telegram (long-poll or webhook, with voice in/out), an MCP server, and the CLI.
+Interfaces are the terminal (herdr panes running omp by default), optional Telegram (long-poll or webhook, with voice in/out), an MCP server, and the CLI.
 
 Evidence: [README](README.md), [.agents/AGENTS.md](.agents/AGENTS.md), [.agents/rules/system.md](.agents/rules/system.md), [.agents/zolly/agent.md](.agents/zolly/agent.md), [tool/src/main.rs](tool/src/main.rs).
 
@@ -76,9 +76,9 @@ zolly is an orchestration layer; Grok Bot is a hosted product; Cindy is a client
 |---|---|---|---|
 | Category | Repo-local control plane + prompt kit | Hosted teammate product | Open-source client/platform |
 | Unit of work | Task → worktree → worker → review | Persistent named Bot | Session/team (Lead + Workers) |
-| Runtime | Your machine (Linux-first), omp + herdr | Vendor cloud computer | Your machine, plus SSH/device-link; hosted sync optional |
+| Runtime | Your machine (Linux-first), herdr + omp (default kind) | Vendor cloud computer | Your machine, plus SSH/device-link; hosted sync optional |
 | Source/license | Source public, **Apache-2.0** | No published source | Apache-2.0 client; backend not in this repo |
-| Coding agent | omp (coupled) | Bundled, not user-replaceable | Claude Code / Codex / Pi; native in progress |
+| Coding agent | 24 herdr kinds; omp pinned by default | Bundled, not user-replaceable | Claude Code / Codex / Pi; native in progress |
 | Orchestration | Fixed role chain | Peer Bots, group chats, handoffs | Lead delegates to full Worker sessions; Orca |
 | Human gate | `gate: human` for money/prod/publish/customers; reviewer merges | Per-action approvals + Auto Review | Permission modes and approvals; Lead acceptance |
 | Merge authority | Reviewer only (documented), via `gh pr merge` | No repo-level merge-authority contract documented | No dedicated reviewer seat; normal PR workflow |
@@ -176,15 +176,17 @@ Verdict: Grok Bot for peer teams, Cindy for IDE-style teams, Bernstein for deter
 
 ### 3.6 Model and harness choice
 
-**zolly** is model-agnostic only through omp. It is harness-coupled to omp/herdr: the foreman starts `herdr agent start ... --kind omp`, and the orchestration code works around the omp TUI’s paste and idle-status behavior. There is no ACP or multi-harness seam.
+**zolly** runs its seats in **herdr**, and herdr starts any of 24 agent kinds (`codex`, `claude`, `gemini`, `grok`, `opencode`, `cursor`, `cline`, `copilot`, `kimi`, `devin`, `hermes`, `omp`, …). The kit **pins omp by default**: `open_seat` passes `"omp"` to `agent_start_with_retry`, the manager seat is spawned as `omp`, and the foreman's persona instructs `herdr agent start … --kind omp` for workers and the reviewer. No config knob selects the kind. Several integrations are shaped around omp specifically — `@file` launch arguments, `omp collab list/link` and `/collab`, the `-- --model <model>` requirement, and the idle/done status heuristics in `herdr.rs` — so substituting a kind works at the herdr layer but risks those paths, not the seat chain itself.
 
 **Grok Bot** is bundled. The user chooses neither harness nor model beyond what the product exposes.
 
 **Cindy** is the strongest: Claude Code, Codex and Pi, switchable mid-task, with different harness × model combinations per plan/execute/review, plus a headless runtime with pinned profiles.
 
-**Claude Code** and **Codex** are harnesses first; their model choice is part of their product. zolly could in principle orchestrate them, but that would require code changes.
+**OpenBot** drives 12 runtimes and any ACP agent from one UI, chosen per agent and switchable while keeping the conversation.
 
-Verdict: Cindy wins; zolly is the most locked-in to a single harness; Grok Bot is locked by design.
+**Claude Code** and **Codex** are harnesses first; their model choice is part of their product. zolly can start either in a herdr pane today; what it lacks is a first-class choice (config + omp-specific behaviors behind a harness trait) rather than a hard dependency on herdr.
+
+Verdict: Cindy and OpenBot are the true multi-harness products; zolly is multi-harness-capable with a pinned default; Grok Bot is locked by design.
 
 ### 3.7 Ops burden and cost
 
@@ -198,7 +200,7 @@ Verdict: Grok Bot for zero ops; Cindy for a GUI; zolly for control at the cost o
 
 ### 3.8 Lock-in and exit
 
-**zolly** has the best data portability: git plus markdown, no vendor database. But it has hard runtime coupling to omp/herdr and Linux/systemd; radio is optional and falls back to a one-line `herdr agent prompt`. The office is portable; the runtime is not.
+**zolly** has the best data portability: git plus markdown, no vendor database. But it couples hard to herdr and Linux/systemd; omp is the pinned default harness rather than the only one herdr can start; radio is optional and falls back to a one-line `herdr agent prompt`. The office is portable; the runtime is not.
 
 **Grok Bot** has the highest lock-in: closed runtime, vendor memory, cloud computer, vendor-managed routines. Exit means losing the environment and automation.
 
@@ -321,7 +323,7 @@ Evidence: [site](https://openbot.run/), [README](https://github.com/nightly-labs
 
 ### Wins
 
-- **Harness coverage.** Twelve provider runtimes behind one UI — Codex App Server, Claude Agent SDK, Grok CLI, OpenCode, Gemini via the Antigravity ACP server, Cursor, Cline, Kimi Code, Devin, GitHub Copilot CLI, Hermes Agent via ACP — plus any ACP agent, any OpenAI-compatible endpoint, and local Ollama/LM Studio. zolly orchestrates exactly one harness (omp).
+- **Harness coverage.** Twelve provider runtimes behind one UI — Codex App Server, Claude Agent SDK, Grok CLI, OpenCode, Gemini via the Antigravity ACP server, Cursor, Cline, Kimi Code, Devin, GitHub Copilot CLI, Hermes Agent via ACP — plus any ACP agent, any OpenAI-compatible endpoint, and local Ollama/LM Studio. zolly runs seats through herdr as well, and herdr supports 24 agent kinds, but zolly pins omp with no config knob and several integrations are omp-shaped (see §3.6). OpenBot's choice is a product feature; zolly's is a substituted default.
 - **Three operating systems and two mobile apps.** Signed macOS (Apple silicon/Intel), signed Windows x64, Linux x64/arm64 AppImage; iPhone and Android clients plus a web client, all controlling the same local host. zolly is Linux-only today.
 - **A real cockpit.** FIFO queues with pause/resume/cancel and crash-safe persistence, agent-to-agent messages, shared channels with one task owner and delegation, per-agent model/reasoning/notifications, context monitoring with automatic compaction.
 - **An embedded browser per agent.** A sandboxed `WebContentsView` host with profiles and separate storage; optional Computer Use through a bundled `cua-driver` on all three desktop platforms. zolly has a browser-relay script, not an integrated browser.
@@ -347,7 +349,7 @@ The honest summary: **OpenBot is the product zolly's office idea would become if
 
 ## 8. The wider field
 
-- **Claude Code** — the strongest general harness: subagents, agent view for parallel sessions, hooks, skills, MCP, `CLAUDE.md`/`AGENTS.md`/auto memory, terminal/IDE/desktop/web/mobile, scheduled/cloud tasks, and channels (Telegram, Discord, iMessage, webhooks). zolly’s workers and reviewer could be built on it, but zolly currently uses omp.
+- **Claude Code** — the strongest general harness: subagents, agent view for parallel sessions, hooks, skills, MCP, `CLAUDE.md`/`AGENTS.md`/auto memory, terminal/IDE/desktop/web/mobile, scheduled/cloud tasks, and channels (Telegram, Discord, iMessage, webhooks). herdr can start it, and zolly's seat chain does not care which kind runs, but the kit pins omp by default and several integrations are omp-shaped.
 - **Codex CLI** — a local terminal harness with OS-enforced sandboxing and approvals, `AGENTS.md`, subagents, MCP, skills/plugins, and cloud handoff. Best if you want strong sandboxing and a single vendor.
 - **OpenHands Agent Canvas** — an MIT self-hosted control center for agents and automations; local/Docker/VM/cloud backends; Claude Code, Codex, Gemini, Pi and OpenCode via ACP; Slack/GitHub/Linear triggers. The closest open-source “platform” to zolly’s office, but web UI + Docker + heavier.
 - **Goose** — an Apache-2.0 Rust local agent, 15+ providers, 70+ MCP extensions, desktop/CLI/API, part of the Linux Foundation’s AAIF. A harness/tool, not an orchestrator.
@@ -379,7 +381,7 @@ Priority order, based on the gaps above:
 3. **Fix the triage contract.** Make `route` read `project.md` thresholds, or remove the claim. Add a test that fails when the documented threshold and the code diverge.
 4. **Reduce the stack.** One-command bootstrap that verifies or installs omp, herdr and `gh`; a container image; macOS support; a dry-run mode that works without omp. Radio stays optional.
 5. **Ship Windows.** The plan and its acceptance criteria live in [ROADMAP.md](ROADMAP.md): portable liveness/locking, no `std::os::unix`, no `/proc`, no `systemctl`, a PowerShell installer and a Windows service path, plus a CI cross-check. This closes the platform gap OpenBot exploits.
-6. **Add a harness seam.** ACP or a `--worker-cmd` adapter so zolly can orchestrate Claude Code/Codex, not just omp.
+6. **Make the harness a choice, not a pinned default.** `herdr` already starts 24 kinds; expose the kind in `config.toml` (per seat or office-wide), move the omp-shaped paths (`@file` launch args, `/collab`, `-- --model`, idle/done heuristics) behind a small harness trait, and accept an ACP or `--worker-cmd` adapter for kinds herdr does not ship. Today the seat chain itself is harness-neutral; these integrations are what keep omp effectively mandatory.
 7. **Add read-only web/mobile status.** A small HTTP UI for brief/queue/gates; keep Telegram for actions.
 8. **Prove reliability.** Evals for task success, gate-bypass attempts, crash recovery and stale-worker detection; publish numbers.
 9. **Add fan-out.** A task DAG and a merge queue for multi-task epics, while keeping the reviewer as the only door.
