@@ -1470,17 +1470,23 @@ fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> R
     // worktree, and merging there would fast-forward the task branch instead.
     let repo = main_checkout(root);
     let office = load_owned_office(&repo)?;
-    // Guard: refuse to sweep main while it holds uncommitted tracked changes —
-    // listing them by name so the reader sees exactly what blocks them, rather
-    // than being told the refs "diverged" when they do not.
-    check_main_clean(&repo)?;
+    // Guard: refuse to sweep main while it holds uncommitted changes the
+    // incoming merge would genuinely overwrite — naming them, so the reader
+    // sees exactly what blocks them. A path already holding the incoming blob's
+    // bytes is the merge result written early, not a change to protect: refusing
+    // on it is what stopped `close` from closing the task whose own merge cleans
+    // the tree (#32). The guard returns the commit it validated, and the sync
+    // merges exactly that commit: re-resolving the ref after the check would
+    // let a push land in between and autostash the approved content onto
+    // different history.
+    let validated = check_sweep_main_clean(&repo, &office.base_branch, &office.remote)?;
     let branch = format!("foreman/{task_id}");
 
     // 1/6 — local base follows the merge. Fast-forward only: this never creates
     // a commit and never pushes. `merge --ff-only`, deliberately not `pull`:
     // pull.rebase=true is set globally on this machine, so a pull dies on the
     // memory files the CLI keeps dirty.
-    let sync = sync_main(&repo, &office.base_branch, &office.remote);
+    let sync = sync_main(&repo, &office.base_branch, &office.remote, &validated);
     println!("1/6 sync      : {}", sync.outcome.line);
 
     // 2/6 — the task branch, once its work is contained in the remote base.
@@ -1623,6 +1629,18 @@ fn git_ok(dir: &std::path::Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Raw stdout bytes when git exits 0, `None` otherwise. Exists for one
+/// comparison — a worktree file against the blob a merge would bring — where a
+/// lossy `String` could call two different binaries equal.
+fn git_bytes(dir: &std::path::Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
 /// First 8 characters of a sha, for one-line reporting.
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
@@ -1689,6 +1707,94 @@ fn check_main_clean(repo: &std::path::Path) -> Result<()> {
     );
 }
 
+/// True when `path` is staged, its index agrees with one of the two ends, and
+/// its working-tree bytes equal the blob `incoming` holds for it.
+///
+/// This is the "merge result, written early" case: a task that exists to land
+/// its own dirty files leaves them in the worktree with exactly the content the
+/// merge brings. A fast-forward overwrites nothing and loses nothing, so such a
+/// path must not block the sweep. It covers all three shapes the brief's
+/// criterion names — unstaged ` M`, staged `M `, and staged-new `A ` — because
+/// the test is the content, not the status letter.
+///
+/// Two things stay blockers even when the worktree bytes match:
+///
+/// - **Untracked.** git refuses to fast-forward over an untracked file even
+///   when its bytes match, so `??` must keep refusing. The index is the
+///   discriminator: a staged path has an index blob at `:path`, an untracked one
+///   does not.
+/// - **An index holding a third version.** `merge --ff-only --autostash`
+///   stashes the worktree and replays it without the index, so a version staged
+///   apart from both ends is silently dropped. Measured: staged `B`, worktree
+///   `C` == incoming `C` → the merge exits 0, the tree ends clean, the stash
+///   list is empty, and `B` is gone.
+fn already_holds_incoming(repo: &std::path::Path, incoming: &str, path: &str) -> bool {
+    // Staged, not untracked — see above.
+    if !git_ok(repo, &["cat-file", "-e", &format!(":{path}")]) {
+        return false;
+    }
+    // The index must agree with one of the two ends: HEAD (unstaged, the merge
+    // result written early) or the incoming blob (staged to exactly that).
+    let staged_matches_head = git_ok(repo, &["diff", "--cached", "--quiet", "--", path]);
+    let staged_matches_incoming =
+        git_ok(repo, &["diff", "--cached", "--quiet", incoming, "--", path]);
+    if !staged_matches_head && !staged_matches_incoming {
+        return false;
+    }
+    let Some(blob) = git_bytes(repo, &["cat-file", "blob", &format!("{incoming}:{path}")]) else {
+        return false;
+    };
+    std::fs::read(repo.join(path))
+        .map(|local| local == blob)
+        .unwrap_or(false)
+}
+
+/// The dirty paths a fast-forward to `remote_name/base` genuinely cannot carry.
+/// Every dirty path stays a blocker except one whose worktree already holds the
+/// incoming blob — see `already_holds_incoming`. The guard is narrowed by
+/// content, never dropped: one genuinely differing file still refuses.
+fn sweep_dirty_blockers(
+    repo: &std::path::Path,
+    base: &str,
+    remote_name: &str,
+) -> Result<Vec<String>> {
+    let incoming = format!("{remote_name}/{base}");
+    Ok(main_dirty_files(repo)?
+        .into_iter()
+        .filter(|path| !already_holds_incoming(repo, &incoming, path))
+        .collect())
+}
+
+/// The sweep's guard. `zolly close` runs it instead of `check_main_clean`
+/// because close is the one command that syncs the base first: a workspace that
+/// is only dirty with the merge's own content can and must be closed.
+///
+/// Refreshes the remote-tracking ref first so the comparison is against what the
+/// merge will actually bring, not a stale copy. A failed fetch is not fatal —
+/// the last known ref still answers the question — but it must not pass
+/// silently, and a wrong answer only ever refuses (git aborts the fast-forward
+/// itself if the real remote differs).
+///
+/// Returns the commit the comparison validated, so `sync_main` merges exactly
+/// that content instead of re-resolving a mutable ref.
+fn check_sweep_main_clean(repo: &std::path::Path, base: &str, remote_name: &str) -> Result<String> {
+    if let Err(e) = git_out(repo, &["fetch", remote_name]) {
+        eprintln!("warn: {e} — comparing {base} against the last known {remote_name}/{base}");
+    }
+    let incoming = format!("{remote_name}/{base}");
+    let validated = git_out(repo, &["rev-parse", &incoming])
+        .with_context(|| format!("cannot resolve {incoming} to compare against"))?
+        .trim()
+        .to_string();
+    let blockers = sweep_dirty_blockers(repo, base, remote_name)?;
+    if blockers.is_empty() {
+        return Ok(validated);
+    }
+    anyhow::bail!(
+        "refusing to touch main: it has uncommitted tracked changes — {}",
+        blockers.join(", ")
+    );
+}
 
 /// (local base sha, remote base sha, commits base is ahead, commits behind).
 fn main_vs_origin(
@@ -1773,7 +1879,18 @@ struct MainSync {
 /// `.agents/memory` files) across the merge instead of letting Git refuse it.
 /// Returns the SHAs so the deploy step diffs the real merge, and an
 /// already-synced base yields `before == after` → an empty diff → no rebuild.
-fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync {
+///
+/// `validated` is the commit `check_sweep_main_clean` compared the dirty tree
+/// against. Merging that immutable id, not `remote/base`, is what keeps the
+/// sync from fast-forwarding to content the guard never saw when a push lands
+/// between the two steps: git would then replay the autostash onto a different
+/// tree and can stop on a conflict.
+fn sync_main(
+    repo: &std::path::Path,
+    base: &str,
+    remote_name: &str,
+    validated: &str,
+) -> MainSync {
     let head_branch = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "?".to_string());
@@ -1791,13 +1908,7 @@ fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync 
             shas: None,
         };
     }
-    if let Err(e) = git_out(repo, &["fetch", remote_name]) {
-        return MainSync {
-            outcome: StepOutcome::new(format!("{e}"), "FAILED (fetch)", true),
-            shas: None,
-        };
-    }
-    let (head, remote, ahead, behind) = match main_vs_origin(repo, base, remote_name) {
+    let (head, _, ahead, behind) = match main_vs_origin(repo, base, remote_name) {
         Ok(v) => v,
         Err(e) => {
             return MainSync {
@@ -1806,6 +1917,9 @@ fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync 
             };
         }
     };
+    // The guard fetched and compared against this id; the ref may have moved
+    // since, but the merge must carry exactly what was validated.
+    let remote = validated.to_string();
     if head == remote {
         return MainSync {
             outcome: StepOutcome::new(
@@ -1821,8 +1935,7 @@ fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync 
             shas: Some((head.clone(), head)),
         };
     }
-    let merge_ref = format!("{remote_name}/{base}");
-    match git_out(repo, &["merge", "--ff-only", "--autostash", &merge_ref]) {
+    match git_out(repo, &["merge", "--ff-only", "--autostash", &remote]) {
         Ok(_) => MainSync {
             outcome: StepOutcome::new(
                 format!(
@@ -3226,6 +3339,209 @@ mod close_tests {
         run_git(&tmp, &["config", "user.name", "test"]);
         run_git(&tmp, &["commit", "--allow-empty", "-m", "root"]);
         assert!(check_main_clean(&tmp).is_ok());
+    }
+
+    /// A repo whose `origin/main` carries the docs merge, with the local base
+    /// one commit behind it — the shape `zolly close` meets on the task that
+    /// lands its own dirty files.
+    fn fixture_behind_origin(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "zolly-sweep-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        let origin = root.join("origin.git");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&origin).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&origin, &["init", "--bare", "-q", "-b", "main"]);
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("HANDOFF.md"), "old handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "old schedule\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "root"]);
+        run_git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run_git(&repo, &["push", "-q", "-u", "origin", "main"]);
+        // The merge the close is sweeping: exactly these two files, plus one
+        // new file for the staged-new case.
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+        std::fs::write(repo.join("added.md"), "added by pr\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "docs: land handoff and schedule"]);
+        run_git(&repo, &["push", "-q", "origin", "main"]);
+        run_git(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
+        (repo, origin)
+    }
+
+    #[test]
+    fn sweep_allows_dirty_files_that_already_hold_the_incoming_blob() {
+        let (repo, _origin) = fixture_behind_origin("identical");
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+
+        // The defect: the old guard refused the tree its own merge cleans.
+        assert!(check_main_clean(&repo).is_err(), "old guard must refuse");
+        // The fix: no blocker remains, and the fast-forward the sweep runs
+        // then succeeds and leaves a clean tree.
+        assert!(
+            sweep_dirty_blockers(&repo, "main", "origin").unwrap().is_empty(),
+            "identical paths are not blockers"
+        );
+        check_sweep_main_clean(&repo, "main", "origin").expect("sweep must proceed");
+        run_git(&repo, &["merge", "--ff-only", "--autostash", "origin/main"]);
+        assert!(check_main_clean(&repo).is_ok(), "merge must leave a clean tree");
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_still_refuses_a_genuinely_different_file() {
+        let (repo, _origin) = fixture_behind_origin("differing");
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "a local edit\n").unwrap();
+
+        let blockers = sweep_dirty_blockers(&repo, "main", "origin").unwrap();
+        assert_eq!(blockers, vec!["tomorrow_schedule.md".to_string()]);
+        let err = check_sweep_main_clean(&repo, "main", "origin")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("tomorrow_schedule.md"), "{err}");
+        assert!(err.contains("uncommitted tracked changes"), "{err}");
+        assert!(!err.contains("HANDOFF.md"), "identical path must not be named: {err}");
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_refuses_a_staged_version_the_merge_would_drop() {
+        // "MM": the index holds a version the worktree does not, and the
+        // worktree equals the incoming blob. `merge --ff-only --autostash`
+        // stashes the worktree and replays it without the index, so calling
+        // this path safe would delete the staged version with no trace.
+        let (repo, _origin) = fixture_behind_origin("staged");
+        std::fs::write(repo.join("HANDOFF.md"), "staged handoff\n").unwrap();
+        run_git(&repo, &["add", "HANDOFF.md"]);
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+
+        let status = git_out(&repo, &["status", "--porcelain"]).unwrap();
+        assert!(status.lines().any(|l| l.starts_with("MM")), "{status}");
+
+        let blockers = sweep_dirty_blockers(&repo, "main", "origin").unwrap();
+        assert_eq!(blockers, vec!["HANDOFF.md".to_string()]);
+        let err = check_sweep_main_clean(&repo, "main", "origin")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HANDOFF.md"), "{err}");
+        // The unstaged file is still the "merge result, written early" case.
+        assert!(!err.contains("tomorrow_schedule.md"), "{err}");
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_allows_a_staged_path_that_already_holds_the_incoming_blob() {
+        // Status `M ` with index == worktree == incoming: the merge brings
+        // exactly what is staged, so nothing is overwritten or lost.
+        let (repo, _origin) = fixture_behind_origin("staged-identical");
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        run_git(&repo, &["add", "HANDOFF.md"]);
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+
+        let status = git_out(&repo, &["status", "--porcelain"]).unwrap();
+        assert!(status.lines().any(|l| l.starts_with("M ")), "{status}");
+
+        assert!(
+            sweep_dirty_blockers(&repo, "main", "origin").unwrap().is_empty(),
+            "staged-to-incoming paths are not blockers"
+        );
+        check_sweep_main_clean(&repo, "main", "origin").expect("sweep must proceed");
+        run_git(&repo, &["merge", "--ff-only", "--autostash", "origin/main"]);
+        assert!(check_main_clean(&repo).is_ok(), "merge must leave a clean tree");
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_allows_a_staged_new_path_that_already_holds_the_incoming_blob() {
+        // Status `A ` — a path the local base does not have at all, staged with
+        // the content the merge adds. Index and worktree both agree with the
+        // incoming blob, so the fast-forward carries it and loses nothing.
+        let (repo, _origin) = fixture_behind_origin("staged-new");
+        std::fs::write(repo.join("added.md"), "added by pr\n").unwrap();
+        run_git(&repo, &["add", "added.md"]);
+
+        let status = git_out(&repo, &["status", "--porcelain"]).unwrap();
+        assert!(status.lines().any(|l| l.starts_with("A ")), "{status}");
+
+        assert!(
+            sweep_dirty_blockers(&repo, "main", "origin").unwrap().is_empty(),
+            "a staged-new path at the incoming blob is not a blocker"
+        );
+        check_sweep_main_clean(&repo, "main", "origin").expect("sweep must proceed");
+        run_git(&repo, &["merge", "--ff-only", "--autostash", "origin/main"]);
+        assert!(check_main_clean(&repo).is_ok(), "merge must leave a clean tree");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("added.md")).unwrap(),
+            "added by pr\n"
+        );
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_never_treats_an_untracked_path_as_safe() {
+        // git refuses to fast-forward over an untracked file even when bytes
+        // match, and a stray file is exactly what the guard exists to name.
+        let (repo, _origin) = fixture_behind_origin("untracked");
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+        std::fs::write(repo.join("stray.stamp"), "stamp\n").unwrap();
+
+        let blockers = sweep_dirty_blockers(&repo, "main", "origin").unwrap();
+        assert_eq!(blockers, vec!["stray.stamp".to_string()]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_syncs_the_commit_it_validated_not_a_moved_ref() {
+        // The race the pin closes: a push lands after the guard compared the
+        // dirty tree. Merging the ref would fast-forward to content the guard
+        // never saw and replay the autostash onto a different tree.
+        let (repo, _origin) = fixture_behind_origin("pinned");
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+
+        let validated =
+            check_sweep_main_clean(&repo, "main", "origin").expect("sweep must proceed");
+        let at_check = git_out(&repo, &["rev-parse", "origin/main"]).unwrap().trim().to_string();
+        assert_eq!(validated, at_check, "the guard reports the commit it compared");
+
+        // A commit lands on the remote ref between the check and the sync,
+        // without touching local `main`.
+        let tree = git_out(&repo, &["rev-parse", "origin/main^{tree}"]).unwrap().trim().to_string();
+        let newer = git_out(
+            &repo,
+            &["commit-tree", &tree, "-p", &validated, "-m", "late push"],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        run_git(&repo, &["update-ref", "refs/remotes/origin/main", &newer]);
+
+        let sync = sync_main(&repo, "main", "origin", &validated);
+        assert!(!sync.outcome.failed, "{}", sync.outcome.line);
+        assert_eq!(
+            git_out(&repo, &["rev-parse", "main"]).unwrap().trim(),
+            validated,
+            "main must land on the validated commit, not the moved ref"
+        );
+        assert!(
+            !git_ok(&repo, &["merge-base", "--is-ancestor", &newer, "main"]),
+            "the unvalidated commit must not be merged"
+        );
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
     }
     #[test]
     fn main_checkout_is_the_first_registered_worktree() {
