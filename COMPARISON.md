@@ -1,6 +1,6 @@
-# zolly vs Grok Bot vs Cindy — comparison report
+# zolly vs Grok Bot vs Cindy vs OpenBot — comparison report
 
-**Date:** 2026-10-24  
+**Date:** 2026-10-24, revised 2026-11-05 (OpenBot section added)
 **Scope:** architecture, control model, trust, memory, orchestration, portability, maturity  
 **Audience:** technical founder choosing a multi-agent setup
 
@@ -12,8 +12,10 @@
 | What is zolly best at? | Repo-resident rules and personas, an explicit authority chain, a single reviewer merge gate, deterministic triage/briefing, and git-native state. |
 | What is Grok Bot best at? | Zero-ops, always-on, cross-device AI teammates with a persistent cloud computer and enterprise governance. |
 | What is Cindy best at? | An open-source client, local-first execution, multi-harness desktop/mobile workspace, and a real Lead/Worker orchestration called Orca. |
-| Closest competitors to zolly | Bernstein (governance/audit), Agent Orchestrator (worktree supervision UX), OpenHands Agent Canvas (self-hosted control center). |
-| Biggest zolly gaps | Procedural rather than enforced merge gate; no sandbox; Linux/omp/herdr coupling; no cloud or mobile app; single-maintainer maturity. |
+| What is OpenBot best at? | A polished local-first desktop workspace for a named agent team: 12 provider runtimes behind one UI, per-agent workspaces, queues, an embedded browser, agent-to-agent messaging, and desktop/mobile clients on macOS, Windows and Linux. |
+| Is zolly competing with OpenBot? | Partly, and more directly than with any tool above except Cindy. Both run agents locally with persistent workspaces. OpenBot is a **product** (Electron app, SQLite, accounts, mobile); zolly is a **repo-local control plane** with a reviewer gate and no UI. |
+| Closest competitors to zolly | OpenBot and Cindy (local multi-agent workspaces), Bernstein (governance/audit), Agent Orchestrator (worktree supervision UX), OpenHands Agent Canvas (self-hosted control center). |
+| Biggest zolly gaps | Procedural rather than enforced merge gate; no sandbox; Linux/omp/herdr coupling and no Windows support (planned — see [ROADMAP.md](ROADMAP.md)); no cloud or mobile app; single-maintainer maturity. |
 
 The rest of this report defends those claims with source evidence. Judgments about relative quality are architectural, not benchmark results.
 
@@ -88,7 +90,7 @@ zolly is an orchestration layer; Grok Bot is a hosted product; Cindy is a client
 | Isolation | Frequency/names/credentials; same OS user | Per-user cloud isolation; enterprise egress/MCP controls | Local process/DB; SSH/remote; permission modes |
 | Offline | Yes, except model and Telegram calls | No, cloud-dependent | Local agents can run; hosted features need an account |
 | Cost | Model usage + your hardware | Plan + separate usage | Free client; model/subscription or hosted usage |
-| Maturity | 73 commits, 0 stars/forks, solo, pre-release | Funded product, beta | 3.5k stars, 527 forks, active, ~1.9k issues |
+| Maturity | 81 commits, 0 stars/forks, solo, pre-release | Funded product, beta | 3.5k stars, 527 forks, active, ~1.9k issues |
 
 Point-in-time metrics: zolly from the local git history and the public repo page; Cindy and the other open-source projects from their GitHub pages on 2026-10-24.
 
@@ -102,6 +104,7 @@ Point-in-time metrics: zolly from the local git history and the public repo page
 | Goose | Local agent | Local | Apache-2.0 | Local extensibility | Rust, 15+ providers, 70+ MCP, desktop/CLI/API |
 | Devin | Cloud SWE | Vendor cloud | Closed | Autonomous worker | Slack/Teams/Linear/Jira intake, IDE, API, CLI handoff |
 | Cursor Cloud Agents | Cloud SWE | Vendor cloud | Closed | Parallel PR workers | Cloud VMs, artifacts, remote desktop, hooks, multi-repo |
+| OpenBot | Local multi-agent desktop app | Local desktop + optional self-hosted server | PolyForm Noncommercial 1.0.0 (source-available; ≤0.1.11 Apache-2.0) | Named local agents with workspaces and queues | 12 provider runtimes, embedded browser, agent-to-agent messaging, desktop/iPhone/Android, self-hosted server |
 | Bernstein | Governance/orchestration | Local | Apache-2.0 | Deterministic control + audit | YAML DAG, no LLM in scheduling, worktrees, Janitor, replay/HMAC |
 | Agent Orchestrator | Worktree orchestrator | Local desktop + daemon | Apache-2.0 | Orchestrator/worker + review UX | 30+ harnesses, Kanban, PR/CI/review, mobile |
 | Claude Squad | TUI orchestrator | Local | AGPL-3.0 | Parallel worktrees | tmux + worktrees, simple TUI, no coordination |
@@ -233,9 +236,9 @@ Verdict: zolly wins on data portability; Cindy wins on harness/model portability
 
 5. **Prerequisite gap.** The README’s Requirements list covers git, POSIX shell/curl, Rust, Linux/systemd and optional Telegram/voice/GitNexus. The office de facto also needs `omp`, `herdr` and `gh` (the reviewer uses `gh pr merge`; the foreman uses `gh pr create`). Radio is optional: `zolly bus` falls back to a one-line `herdr agent prompt`. The installer does not install the required trio. A fresh user following “Requirements” will not get a working office.
 
-6. **Platform coupling.** Linux-first; the Telegram listener is systemd-specific; no Windows path; no cloud execution; the model name is per-machine; no desktop/web/mobile app (Telegram is the remote channel). `zolly doctor` checks binary, config, graph, units and bus membership when radio is installed; the README does not document a preflight for omp/herdr/gh.
+6. **Platform coupling.** Linux-first; the Telegram listener is systemd-specific; there is no Windows path yet — the binary imports `std::os::unix::fs`, checks liveness through `/proc`, shells out to `systemctl`/`timeout`, and the installer and memory CLI are POSIX sh (see [ROADMAP.md](ROADMAP.md) for the Windows workstream); no cloud execution; the model name is per-machine; no desktop/web/mobile app (Telegram is the remote channel). `zolly doctor` checks binary, config, graph, units and bus membership when radio is installed; the README does not document a preflight for omp/herdr/gh.
 
-7. **Scale and quality evidence.** 73 commits in the current history; the public repo shows 0 stars and 0 forks at the time of writing; no benchmarks or evals; single maintainer. About 15.9k lines across the Rust crate, installer, memory CLI, HR and MCP tooling. The documentation is strong; operational evidence at scale is thin.
+7. **Scale and quality evidence.** 81 commits in the current history; the public repo shows 0 stars and 0 forks at the time of writing; no benchmarks or evals; single maintainer. About 15.9k lines across the Rust crate, installer, memory CLI, HR and MCP tooling. The documentation is strong; operational evidence at scale is thin.
 
 8. **No fan-out or DAG.** The documented workflow is one task → one worktree → one worker. The foreman is a persona, not a scheduler. There is no dependency graph, merge queue, or automatic parallel dispatch for a multi-task epic.
 
@@ -310,7 +313,39 @@ Cindy wins on harness/model choice, UI, mobile, local app control, and orchestra
 
 Cindy is what zolly might become if it were a funded product. zolly is what Cindy’s Orca would look like if its state were a repo file tree with a reviewer.
 
-## 7. The wider field
+## 7. OpenBot (openbot.run): what it wins and what it costs
+
+OpenBot is a **local-first desktop workspace for a named agent team**, built as an Electron app (SolidJS renderer, TypeScript) with a SQLite event log and read projections, plus optional Cloudflare-hosted accounts and an iPhone/Android client. Every agent gets a persistent workspace (`~/OpenBot/Agents/<agent-id>`), a conversation, a queue, and its own browser session. It is the most direct product competitor to zolly's "office" idea, and the gap it exposes is not policy but **reach**.
+
+Evidence: [site](https://openbot.run/), [README](https://github.com/nightly-labs/openbot), [architecture section](https://github.com/nightly-labs/openbot#architecture), [LICENSE](https://github.com/nightly-labs/openbot/blob/main/LICENSE).
+
+### Wins
+
+- **Harness coverage.** Twelve provider runtimes behind one UI — Codex App Server, Claude Agent SDK, Grok CLI, OpenCode, Gemini via the Antigravity ACP server, Cursor, Cline, Kimi Code, Devin, GitHub Copilot CLI, Hermes Agent via ACP — plus any ACP agent, any OpenAI-compatible endpoint, and local Ollama/LM Studio. zolly orchestrates exactly one harness (omp).
+- **Three operating systems and two mobile apps.** Signed macOS (Apple silicon/Intel), signed Windows x64, Linux x64/arm64 AppImage; iPhone and Android clients plus a web client, all controlling the same local host. zolly is Linux-only today.
+- **A real cockpit.** FIFO queues with pause/resume/cancel and crash-safe persistence, agent-to-agent messages, shared channels with one task owner and delegation, per-agent model/reasoning/notifications, context monitoring with automatic compaction.
+- **An embedded browser per agent.** A sandboxed `WebContentsView` host with profiles and separate storage; optional Computer Use through a bundled `cua-driver` on all three desktop platforms. zolly has a browser-relay script, not an integrated browser.
+- **Reach beyond the desk.** Optional accounts, teams, invitations, and remote control over WebRTC (Signal for setup, coturn for relay), with a documented self-hosted server (install script, Docker, AppArmor note) and remote desktop.
+- **Distribution.** A marketplace for agents, skills and apps; a local skill library with revisions and install/update semantics; a Grok Bot import path. zolly's skills are files an office carries, not a catalog.
+- **Operational maturity signals.** 5,695 stars, 580 forks, 593 open issues, tag-driven signed releases, a CI matrix that includes typechecks, offline tests, a browser smoke test, i18n checks and a types ratchet.
+
+### Costs
+
+- **No repo-native policy layer.** Agent instructions, memories, skills and queues are SQLite records inside the app; there is no `.agents/` tree to review in git, no load-line contract, no reviewer seat, and no documented merge-authority rule. A team cannot diff its governance.
+- **Licence.** PolyForm Noncommercial 1.0.0: free for personal and other noncommercial use, commercial use needs a paid licence. Only versions up to 0.1.11 were Apache-2.0. Contributions require a CLA. zolly is Apache-2.0 for everyone.
+- **Access model is explicitly not a boundary.** Agents run with `danger-full-access` and `approvalPolicy: never` after first-launch consent, in a workspace that also permits host access when the provider and OS allow it. zolly has the same class of risk (same OS user, no sandbox), so this is a tie on safety-by-design and a loss on surface area for OpenBot.
+- **Accounts and cloud edges.** The desktop runs locally, but accounts, teams, mobile pairing and remote control depend on Cloudflare Workers/D1 and (for teams) a self-hosted Signal/TURN stack. zolly has no account layer and no telemetry.
+- **State is not portable.** A profile is an Electron `userData` database. "What did the team do last month" is an app query, not `git log` plus `.agents/results/`.
+- **Product-shaped, not founder-shaped.** There is no `gate: human` for money/production/publish/customers, no result-file contract, no deliberate one-worker-per-task chain. Autonomy is the default; review is whatever the user does in the UI.
+- **Maturity cost is the inverse of zolly's.** A large monorepo, Bun/Node 24, Electron packaging, a 15-project typecheck, and a mobile build; contributing means signing a CLA and learning a big codebase.
+
+### Against zolly
+
+OpenBot wins on harness choice, platforms (including Windows), UI, remote reach, browser/computer use, queue ergonomics, and distribution. zolly wins on repo-native policy, an explicit authority chain with a single merge door, deterministic control commands, git-native audit and portability, permissive licensing, and a much smaller, inspectable surface.
+
+The honest summary: **OpenBot is the product zolly's office idea would become if it were packaged; zolly is the governance layer OpenBot does not have.** A founder who needs agents on a Windows laptop or a phone should pick OpenBot today. A founder who needs every change to pass a written rulebook and a reviewer before `main` should pick zolly today.
+
+## 8. The wider field
 
 - **Claude Code** — the strongest general harness: subagents, agent view for parallel sessions, hooks, skills, MCP, `CLAUDE.md`/`AGENTS.md`/auto memory, terminal/IDE/desktop/web/mobile, scheduled/cloud tasks, and channels (Telegram, Discord, iMessage, webhooks). zolly’s workers and reviewer could be built on it, but zolly currently uses omp.
 - **Codex CLI** — a local terminal harness with OS-enforced sandboxing and approvals, `AGENTS.md`, subagents, MCP, skills/plugins, and cloud handoff. Best if you want strong sandboxing and a single vendor.
@@ -322,19 +357,20 @@ Cindy is what zolly might become if it were a funded product. zolly is what Cind
 - **Agent Orchestrator** — an Apache-2.0 desktop+mobile orchestrator: a project orchestrator plus workers, worktrees, a live Kanban, PR/CI/review feedback, 30+ harnesses, a local daemon. The closest productized version of zolly’s “office” UX.
 - **Claude Squad / Vibe Kanban / Emdash / Microsoft Conductor** — the worktree-orchestrator layer: parallel isolation and dashboards, mostly without policy or review authority. Claude Squad (AGPL) is the simplest TUI; Vibe Kanban is a community Kanban; Emdash is a multi-provider Electron app with port injection; Microsoft Conductor is YAML workflows with Copilot/Claude.
 
-## 8. Decision guide
+## 9. Decision guide
 
 | If you are… | Pick | Why |
 |---|---|---|
 | A solo founder who wants rules/personas/memory in the repo, a reviewer gate, and Telegram | zolly | The only option here whose control plane is the repo itself. |
 | A non-technical operator handing off general work across apps | Grok Bot | Zero ops, cloud computer, mobile, approvals. |
 | A developer who wants local multi-harness agents with desktop/mobile and real orchestration | Cindy | Apache-2.0 client, Orca, Claude Code/Codex/Pi, BYO keys. |
+| A founder or team wanting a polished local agent workspace on macOS, Windows or Linux, with queues, a browser and phone control | OpenBot | Free for noncommercial use, 12 provider runtimes, embedded browser, desktop/mobile clients; no repo policy layer. |
 | A team wanting a self-hosted agent control center with automations | OpenHands Agent Canvas | MIT, multi-backend, Slack/GitHub/Linear, ACP. |
 | A team needing deterministic, auditable multi-agent workflows | Bernstein | YAML DAG, no LLM in scheduling, replay/HMAC, worktrees. |
 | A team wanting polished parallel worktree supervision | Agent Orchestrator | Desktop+mobile, 30+ harnesses, Kanban, PR/CI/review. |
 | Just the best coding agent | Claude Code or Codex CLI | Mature harnesses with sandboxing, hooks, skills, MCP. |
 
-## 9. What would make zolly competitive
+## 10. What would make zolly competitive
 
 Priority order, based on the gaps above:
 
@@ -342,20 +378,22 @@ Priority order, based on the gaps above:
 2. **Enforce the gate, do not document it.** Use GitHub rulesets/branch protection and required checks; make a CI job the only path to `main`; sandbox the worker (container, Landlock, or a dedicated OS user) so `gh pr merge` is unavailable outside the reviewer.
 3. **Fix the triage contract.** Make `route` read `project.md` thresholds, or remove the claim. Add a test that fails when the documented threshold and the code diverge.
 4. **Reduce the stack.** One-command bootstrap that verifies or installs omp, herdr and `gh`; a container image; macOS support; a dry-run mode that works without omp. Radio stays optional.
-5. **Add a harness seam.** ACP or a `--worker-cmd` adapter so zolly can orchestrate Claude Code/Codex, not just omp.
-6. **Add read-only web/mobile status.** A small HTTP UI for brief/queue/gates; keep Telegram for actions.
-7. **Prove reliability.** Evals for task success, gate-bypass attempts, crash recovery and stale-worker detection; publish numbers.
-8. **Add fan-out.** A task DAG and a merge queue for multi-task epics, while keeping the reviewer as the only door.
+5. **Ship Windows.** The plan and its acceptance criteria live in [ROADMAP.md](ROADMAP.md): portable liveness/locking, no `std::os::unix`, no `/proc`, no `systemctl`, a PowerShell installer and a Windows service path, plus a CI cross-check. This closes the platform gap OpenBot exploits.
+6. **Add a harness seam.** ACP or a `--worker-cmd` adapter so zolly can orchestrate Claude Code/Codex, not just omp.
+7. **Add read-only web/mobile status.** A small HTTP UI for brief/queue/gates; keep Telegram for actions.
+8. **Prove reliability.** Evals for task success, gate-bypass attempts, crash recovery and stale-worker detection; publish numbers.
+9. **Add fan-out.** A task DAG and a merge queue for multi-task epics, while keeping the reviewer as the only door.
 
-## 10. Bottom line
+## 11. Bottom line
 
 zolly is not a worse Grok Bot or a smaller Cindy. It is a different bet: **the repo is the office, the rules are files, the gate is a role, and the control plane is deterministic.**
 
 - **Grok Bot** wins on autonomy, zero-ops, cross-device reach and enterprise governance. It is the right choice when the work is general, long-running, and outside a repository.
 - **Cindy** wins on open-source client inspectability, local execution, multi-harness choice, mobile, and orchestration richness. It is the right choice when you want a product-grade local agent cockpit.
-- **zolly** wins on repo-native policy, git auditability, explicit review authority, deterministic control, and data portability. It is the right choice when the repository *is* the organization and unreviewed changes are the risk.
+- **OpenBot** wins on harness coverage, three desktop platforms plus mobile, UI polish, embedded browser/computer use, and distribution. It is the right choice when you want a local agent team that feels like a product and you do not need repo-enforced governance.
+- **zolly** wins on repo-native policy, git auditability, explicit review authority, deterministic control, permissive licensing, and data portability. It is the right choice when the repository *is* the organization and unreviewed changes are the risk.
 
-The closest competitors are **Bernstein** (governance/audit) and **Agent Orchestrator** (worktree supervision), not Grok Bot. The gaps that matter are legal (contributor policy), enforced (sandbox/branch protection), platform (harness/cross-platform), and evidence (evals/maturity).
+The closest competitors are **OpenBot and Cindy** (local multi-agent workspaces), **Bernstein** (governance/audit) and **Agent Orchestrator** (worktree supervision), not Grok Bot. The gaps that matter are legal (contributor policy), enforced (sandbox/branch protection), platform (harness/**Windows**/cross-platform), and evidence (evals/maturity).
 
 ## Sources
 
@@ -388,6 +426,14 @@ The closest competitors are **Bernstein** (governance/audit) and **Agent Orchest
 - Headless runtime: <https://github.com/makecindy/cindy/blob/main/apps/cindy-headless/README.md>
 - Orca architecture: <https://github.com/makecindy/cindy/blob/main/docs/dev-rules/orca-team-architecture.md>
 
+### OpenBot
+
+- Site: <https://openbot.run/>
+- Repository: <https://github.com/nightly-labs/openbot>
+- Architecture: <https://github.com/nightly-labs/openbot#architecture>
+- Security policy: <https://github.com/nightly-labs/openbot/blob/main/SECURITY.md>
+- License: <https://github.com/nightly-labs/openbot/blob/main/LICENSE>
+
 ### Other tools
 
 - Claude Code: <https://code.claude.com/docs/en/overview>
@@ -407,8 +453,9 @@ The closest competitors are **Bernstein** (governance/audit) and **Agent Orchest
 
 ## Method and caveats
 
-- zolly claims were checked against the local tree at the commit dated 2026-10-23, plus the public repo page. Metrics: 73 commits in the current history; approximately 15.9k lines across `tool/src`, `install.sh`, `.agents/shared/memory`, `.agents/hr/hr.py` and `.agents/zolly/mcp/zolly_mcp.py`; Apache-2.0 (added 2026-10-24).
+- zolly claims were checked against `main` at `7547d14` (2026-11-05), plus the public repo page. Metrics: 81 commits in the current history; approximately 15.9k lines across `tool/src`, `install.sh`, `.agents/shared/memory`, `.agents/hr/hr.py` and `.agents/zolly/mcp/zolly_mcp.py`; Apache-2.0 (added 2026-10-24).
 - Grok Bot claims come from xAI’s docs and launch post as of 2026-10-24. The product is beta; plan availability, pricing and enterprise controls can change.
 - Cindy claims come from its README, headless README and Orca architecture doc. The client is Apache-2.0; the backend is not in the repository.
+- OpenBot claims come from `openbot.run` and the repository README/LICENSE as of 2026-11-05 (5,695 stars, 580 forks, 593 open issues; TypeScript; PolyForm Noncommercial 1.0.0). It is a development preview, so features and licensing can change.
 - Star/fork/issue counts are point-in-time GitHub values and should not be read as quality scores.
 - The comparison is architectural, not a benchmark. No task-success, cost or latency measurements were run. Claims about relative quality are therefore about design and evidence, not measured performance.

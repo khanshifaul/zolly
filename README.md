@@ -68,8 +68,12 @@ are cut from the base branch.
   default worker/reviewer flow opens and merges PRs with it.
 - **A GitHub remote** — the close path needs a PR. A local-only repo can install,
   but the review gate has nowhere to land without a remote.
-- **Linux + a systemd user session** — only for the listener unit. The office
-  itself works without systemd; no Windows path is documented.
+- **Linux + a systemd user session** — the supported platform for the listener
+  unit. The office itself works without systemd.
+- **Windows** — planned, not supported yet: [ROADMAP.md](ROADMAP.md) holds the
+  plan and its acceptance criteria. The whole office runs today under WSL2
+  (Ubuntu 24.04 with systemd); point the installer at the checkout inside the
+  WSL filesystem, not at `/mnt/c`.
 - **Optional:** a Telegram bot token; `voxtype` + `ffmpeg` for inbound voice
   transcription; Piper for voice replies; a public HTTPS endpoint for webhook
   mode; GitNexus for the optional code graph.
@@ -466,8 +470,8 @@ worktree-orchestrator field, including the gaps.
   this kit does not terminate TLS.
 - Installation needs no commit, but the **first task** does: branches are cut
   from the base branch.
-- The office is Linux-first; the listener is systemd-specific. No Windows path
-  is documented.
+- The office is Linux-first; the listener is systemd-specific. Windows is not
+  supported yet — [ROADMAP.md](ROADMAP.md) is the plan; WSL2 works today.
 - **One radio view per office.** `zolly init` ensures one Radio view tab in the
   office workspace. The installed Radio herdr plugin must skip linked
   worktrees; otherwise `herdr worktree create` opens another view per worker.
