@@ -457,6 +457,60 @@ fn voice_download_url(api_root: &str, token: &str, file_path: &str) -> String {
     format!("{base}/file/bot{token}/{file_path}")
 }
 
+/// Download any Telegram file by `file_id` into `dest`, returning the bytes
+/// written.
+///
+/// This is the same two-step the voice path uses — `getFile` resolves the
+/// path, then the `/file/bot<token>/…` URL serves it — so the `/file/` segment
+/// is spelled once, in `voice_download_url`. A non-2xx body is never written:
+/// an error document would otherwise land in the founder's Downloads folder
+/// looking like a real file.
+pub async fn download_file(token: &str, file_id: &str, dest: &Path) -> Result<u64> {
+    let client = get_client();
+
+    let resp = send_redacted(
+        client
+            .get(&api_url(token, "getFile"))
+            .query(&[("file_id", file_id)]),
+        "getFile request failed",
+    )
+    .await?;
+    let body: super::types::FileResponse =
+        json_redacted(resp, "getFile response parse failed").await?;
+    if !body.ok {
+        anyhow::bail!(
+            "getFile failed: {}",
+            body.description.unwrap_or_else(|| "ok=false".into())
+        );
+    }
+    let file_path = body
+        .result
+        .and_then(|r| r.file_path)
+        .ok_or_else(|| anyhow::anyhow!("getFile returned no file_path"))?;
+
+    let url = voice_download_url(&api_root(), token, &file_path);
+    let response = send_redacted(client.get(&url), "file download failed").await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("file download failed: HTTP {status} — {body}");
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| RequestFailure::from_reqwest("file read failed", &e))?;
+    if bytes.is_empty() {
+        anyhow::bail!("download returned no bytes; send the file again");
+    }
+
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    std::fs::write(dest, &bytes).with_context(|| format!("cannot write {}", dest.display()))?;
+    Ok(bytes.len() as u64)
+}
+
 pub async fn transcribe_voice(token: &str, file_id: &str) -> Result<String> {
     let client = get_client();
 
