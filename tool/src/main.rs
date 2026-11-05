@@ -1428,15 +1428,18 @@ fn close(herdr: &herdr::HerdrClient, root: &std::path::Path, task_id: &str) -> R
     // sees exactly what blocks them. A path already holding the incoming blob's
     // bytes is the merge result written early, not a change to protect: refusing
     // on it is what stopped `close` from closing the task whose own merge cleans
-    // the tree (#32).
-    check_sweep_main_clean(&repo, &office.base_branch, &office.remote)?;
+    // the tree (#32). The guard returns the commit it validated, and the sync
+    // merges exactly that commit: re-resolving the ref after the check would
+    // let a push land in between and autostash the approved content onto
+    // different history.
+    let validated = check_sweep_main_clean(&repo, &office.base_branch, &office.remote)?;
     let branch = format!("foreman/{task_id}");
 
     // 1/6 — local base follows the merge. Fast-forward only: this never creates
     // a commit and never pushes. `merge --ff-only`, deliberately not `pull`:
     // pull.rebase=true is set globally on this machine, so a pull dies on the
     // memory files the CLI keeps dirty.
-    let sync = sync_main(&repo, &office.base_branch, &office.remote);
+    let sync = sync_main(&repo, &office.base_branch, &office.remote, &validated);
     println!("1/6 sync      : {}", sync.outcome.line);
 
     // 2/6 — the task branch, once its work is contained in the remote base.
@@ -1724,13 +1727,21 @@ fn sweep_dirty_blockers(
 /// the last known ref still answers the question — but it must not pass
 /// silently, and a wrong answer only ever refuses (git aborts the fast-forward
 /// itself if the real remote differs).
-fn check_sweep_main_clean(repo: &std::path::Path, base: &str, remote_name: &str) -> Result<()> {
+///
+/// Returns the commit the comparison validated, so `sync_main` merges exactly
+/// that content instead of re-resolving a mutable ref.
+fn check_sweep_main_clean(repo: &std::path::Path, base: &str, remote_name: &str) -> Result<String> {
     if let Err(e) = git_out(repo, &["fetch", remote_name]) {
         eprintln!("warn: {e} — comparing {base} against the last known {remote_name}/{base}");
     }
+    let incoming = format!("{remote_name}/{base}");
+    let validated = git_out(repo, &["rev-parse", &incoming])
+        .with_context(|| format!("cannot resolve {incoming} to compare against"))?
+        .trim()
+        .to_string();
     let blockers = sweep_dirty_blockers(repo, base, remote_name)?;
     if blockers.is_empty() {
-        return Ok(());
+        return Ok(validated);
     }
     anyhow::bail!(
         "refusing to touch main: it has uncommitted tracked changes — {}",
@@ -1821,7 +1832,18 @@ struct MainSync {
 /// `.agents/memory` files) across the merge instead of letting Git refuse it.
 /// Returns the SHAs so the deploy step diffs the real merge, and an
 /// already-synced base yields `before == after` → an empty diff → no rebuild.
-fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync {
+///
+/// `validated` is the commit `check_sweep_main_clean` compared the dirty tree
+/// against. Merging that immutable id, not `remote/base`, is what keeps the
+/// sync from fast-forwarding to content the guard never saw when a push lands
+/// between the two steps: git would then replay the autostash onto a different
+/// tree and can stop on a conflict.
+fn sync_main(
+    repo: &std::path::Path,
+    base: &str,
+    remote_name: &str,
+    validated: &str,
+) -> MainSync {
     let head_branch = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "?".to_string());
@@ -1839,13 +1861,7 @@ fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync 
             shas: None,
         };
     }
-    if let Err(e) = git_out(repo, &["fetch", remote_name]) {
-        return MainSync {
-            outcome: StepOutcome::new(format!("{e}"), "FAILED (fetch)", true),
-            shas: None,
-        };
-    }
-    let (head, remote, ahead, behind) = match main_vs_origin(repo, base, remote_name) {
+    let (head, _, ahead, behind) = match main_vs_origin(repo, base, remote_name) {
         Ok(v) => v,
         Err(e) => {
             return MainSync {
@@ -1854,6 +1870,9 @@ fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync 
             };
         }
     };
+    // The guard fetched and compared against this id; the ref may have moved
+    // since, but the merge must carry exactly what was validated.
+    let remote = validated.to_string();
     if head == remote {
         return MainSync {
             outcome: StepOutcome::new(
@@ -1869,8 +1888,7 @@ fn sync_main(repo: &std::path::Path, base: &str, remote_name: &str) -> MainSync 
             shas: Some((head.clone(), head)),
         };
     }
-    let merge_ref = format!("{remote_name}/{base}");
-    match git_out(repo, &["merge", "--ff-only", "--autostash", &merge_ref]) {
+    match git_out(repo, &["merge", "--ff-only", "--autostash", &remote]) {
         Ok(_) => MainSync {
             outcome: StepOutcome::new(
                 format!(
@@ -3436,6 +3454,46 @@ mod close_tests {
 
         let blockers = sweep_dirty_blockers(&repo, "main", "origin").unwrap();
         assert_eq!(blockers, vec!["stray.stamp".to_string()]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn sweep_syncs_the_commit_it_validated_not_a_moved_ref() {
+        // The race the pin closes: a push lands after the guard compared the
+        // dirty tree. Merging the ref would fast-forward to content the guard
+        // never saw and replay the autostash onto a different tree.
+        let (repo, _origin) = fixture_behind_origin("pinned");
+        std::fs::write(repo.join("HANDOFF.md"), "new handoff\n").unwrap();
+        std::fs::write(repo.join("tomorrow_schedule.md"), "new schedule\n").unwrap();
+
+        let validated =
+            check_sweep_main_clean(&repo, "main", "origin").expect("sweep must proceed");
+        let at_check = git_out(&repo, &["rev-parse", "origin/main"]).unwrap().trim().to_string();
+        assert_eq!(validated, at_check, "the guard reports the commit it compared");
+
+        // A commit lands on the remote ref between the check and the sync,
+        // without touching local `main`.
+        let tree = git_out(&repo, &["rev-parse", "origin/main^{tree}"]).unwrap().trim().to_string();
+        let newer = git_out(
+            &repo,
+            &["commit-tree", &tree, "-p", &validated, "-m", "late push"],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        run_git(&repo, &["update-ref", "refs/remotes/origin/main", &newer]);
+
+        let sync = sync_main(&repo, "main", "origin", &validated);
+        assert!(!sync.outcome.failed, "{}", sync.outcome.line);
+        assert_eq!(
+            git_out(&repo, &["rev-parse", "main"]).unwrap().trim(),
+            validated,
+            "main must land on the validated commit, not the moved ref"
+        );
+        assert!(
+            !git_ok(&repo, &["merge-base", "--is-ancestor", &newer, "main"]),
+            "the unvalidated commit must not be merged"
+        );
         let _ = std::fs::remove_dir_all(repo.parent().unwrap());
     }
     #[test]
