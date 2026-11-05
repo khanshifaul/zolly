@@ -368,7 +368,8 @@ impl Dispatch for RecordingDispatch {
 /// `(file_id, suggested name)`.
 ///
 /// A `document` keeps the name the sender gave it. A `photo` arrives as several
-/// sizes with no name at all, so the largest size is saved under a name built
+/// sizes with no name at all, so the largest size — by dimensions, not by array
+/// position, which Telegram does not document — is saved under a name built
 /// from the message date and id. Anything else returns `None` and the caller
 /// keeps its old behaviour.
 fn inbound_file(message: &Message) -> Option<(String, String)> {
@@ -382,7 +383,11 @@ fn inbound_file(message: &Message) -> Option<(String, String)> {
             .unwrap_or_else(|| format!("document-{}-{}", message.date, message.message_id));
         return Some((doc.file_id.clone(), sanitize_file_name(&name)));
     }
-    if let Some(largest) = message.photo.as_ref().and_then(|sizes| sizes.last()) {
+    if let Some(largest) = message
+        .photo
+        .as_ref()
+        .and_then(|sizes| sizes.iter().max_by_key(|size| (size.width, size.height)))
+    {
         return Some((
             largest.file_id.clone(),
             format!("photo-{}-{}.jpg", message.date, message.message_id),
@@ -421,27 +426,47 @@ fn download_dir(root: &Path) -> PathBuf {
         .unwrap_or_else(|| root.join(".agents/zolly/downloads"))
 }
 
-/// A destination that never overwrites an earlier download: `name.ext`, then
-/// `name-1.ext`, `name-2.ext`, …
-fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
-    }
+/// Reserve a destination that never overwrites an earlier download: `name.ext`,
+/// then `name-1.ext`, `name-2.ext`, …
+///
+/// Each candidate is created with `create_new`, so the name is claimed by the
+/// first writer to arrive: the webhook listener runs its connections in parallel
+/// tasks, and two attachments with the same name must not both select one path.
+/// The returned path holds an empty file — the reservation. The caller writes
+/// through it, or removes it when the download fails.
+fn reserve_path(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
     let path = Path::new(name);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
     let ext = path.extension().and_then(|s| s.to_str());
+    let mut candidates = Vec::with_capacity(1001);
+    candidates.push(dir.join(name));
     for n in 1..1000 {
-        let candidate = match ext {
+        candidates.push(match ext {
             Some(ext) => dir.join(format!("{stem}-{n}.{ext}")),
             None => dir.join(format!("{stem}-{n}")),
-        };
-        if !candidate.exists() {
-            return candidate;
+        });
+    }
+    // A thousand same-named files is a bound, not a policy: the last try is a
+    // timestamp, still reserved atomically.
+    candidates.push(dir.join(format!(
+        "{stem}-{}.{}",
+        chrono::Utc::now().timestamp_millis(),
+        ext.unwrap_or("bin")
+    )));
+
+    let mut last = None;
+    for candidate in candidates {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
         }
     }
-    let stamp = chrono::Utc::now().timestamp_millis();
-    dir.join(format!("{stem}-{stamp}.{}", ext.unwrap_or("bin")))
+    Err(last.unwrap_or_else(|| std::io::Error::other("no free name for the download")))
 }
 
 
@@ -482,7 +507,21 @@ async fn save_inbound(
         return Ok(());
     }
 
-    let dest = unique_path(dir, file_name);
+    let dest = match reserve_path(dir, file_name) {
+        Ok(dest) => dest,
+        Err(e) => {
+            dispatch
+                .send(
+                    chat_id,
+                    &format!(
+                        "Download failed: cannot create a file in {}: {e}",
+                        dir.display()
+                    ),
+                )
+                .await?;
+            return Ok(());
+        }
+    };
     match dispatch.download(file_id, &dest).await {
         Ok(bytes) => {
             let caption = message.caption.as_deref().map(str::trim).unwrap_or("");
@@ -502,6 +541,10 @@ async fn save_inbound(
                 .await?;
         }
         Err(e) => {
+            // The empty reservation must not outlive a failed download: an
+            // 0-byte file where the founder expects their document is worse
+            // than no file at all.
+            let _ = fs::remove_file(&dest);
             dispatch
                 .send(chat_id, &download_failure(file_name, &redact(&format!("{e:#}"))))
                 .await?;
@@ -1579,8 +1622,9 @@ mod tests {
                 "from": {"id": 5, "is_bot": false, "first_name": "F"},
                 "chat": {"id": 5, "type": "private"},
                 "photo": [
-                    {"file_id": "SMALL", "width": 90, "height": 90},
-                    {"file_id": "LARGE", "width": 1280, "height": 1280}
+                    {"file_id": "LARGE", "width": 1280, "height": 1280},
+                    {"file_id": "MEDIUM", "width": 320, "height": 320},
+                    {"file_id": "SMALL", "width": 90, "height": 90}
                 ]
             }
         }))
@@ -1588,7 +1632,7 @@ mod tests {
         assert_eq!(
             inbound_file(&photo.message.expect("message")),
             Some(("LARGE".to_string(), "photo-101-8.jpg".to_string())),
-            "the largest size is the one saved"
+            "the largest size is saved even when it is not the last entry"
         );
 
         let text: Update = serde_json::from_value(serde_json::json!({
@@ -1677,5 +1721,101 @@ mod tests {
         // Any other failure keeps Telegram's own words.
         let other = download_failure("x.pdf", "getFile failed: 400 not found");
         assert_eq!(other, "Download failed: getFile failed: 400 not found");
+    }
+
+    /// Eight threads racing for one name must all get different paths: the
+    /// webhook listener serves connections in parallel tasks, so selecting the
+    /// first free path with `exists()` would let two saves pick the same one.
+    #[test]
+    fn racing_saves_never_reserve_the_same_path() {
+        let dir = std::env::temp_dir().join(format!("zolly-reserve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let paths: Vec<PathBuf> = (0..8)
+            .map(|_| {
+                let dir = dir.clone();
+                std::thread::spawn(move || reserve_path(&dir, "same.txt").unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("reservation thread"))
+            .collect();
+
+        let unique: std::collections::HashSet<&PathBuf> = paths.iter().collect();
+        assert_eq!(
+            unique.len(),
+            paths.len(),
+            "a name was claimed twice: {paths:?}"
+        );
+        for path in &paths {
+            assert_eq!(
+                fs::metadata(path).unwrap().len(),
+                0,
+                "a reservation starts empty"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A download that fails must take its empty reservation with it: a 0-byte
+    /// file where the founder expects their document is worse than none.
+    #[tokio::test]
+    async fn a_failed_download_leaves_no_file_behind() {
+        #[derive(Default)]
+        struct FailingDownload(Mutex<Vec<(i64, String)>>);
+
+        impl Dispatch for FailingDownload {
+            fn send<'a>(&'a self, chat_id: i64, text: &'a str) -> BoxFuture<'a, Result<()>> {
+                self.0.lock().push((chat_id, text.to_string()));
+                Box::pin(async { Ok(()) })
+            }
+
+            fn prompt_agent(&self, _name: &str, _prompt: &str) -> Result<()> {
+                Ok(())
+            }
+
+            fn transcribe<'a>(&'a self, _file_id: &'a str) -> BoxFuture<'a, Result<String>> {
+                Box::pin(async { anyhow::bail!("nothing to transcribe in this test") })
+            }
+
+            fn download<'a>(
+                &'a self,
+                _file_id: &'a str,
+                _dest: &'a Path,
+            ) -> BoxFuture<'a, Result<u64>> {
+                Box::pin(async { anyhow::bail!("the network is down") })
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("zolly-inbound-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let dispatch = FailingDownload::default();
+        let update: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 6,
+            "message": {
+                "message_id": 13, "date": 202,
+                "from": {"id": 5, "is_bot": false, "first_name": "F"},
+                "chat": {"id": 5, "type": "private"},
+                "document": {"file_id": "DOC", "file_name": "gone.txt"}
+            }
+        }))
+        .expect("document update parses");
+        let message = update.message.expect("message");
+
+        save_inbound(&dispatch, &dir, 5, &message, "DOC", "gone.txt")
+            .await
+            .expect("a failed download is reported, not propagated");
+
+        assert!(
+            !dir.join("gone.txt").exists(),
+            "the reservation must be removed when the download fails"
+        );
+        let sent = dispatch.0.lock();
+        assert_eq!(sent.len(), 1, "the failure is reported to the chat");
+        assert!(sent[0].1.contains("Download failed"), "{}", sent[0].1);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

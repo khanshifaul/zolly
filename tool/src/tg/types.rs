@@ -51,7 +51,9 @@ pub struct Document {
     pub mime_type: Option<String>,
 }
 
-/// One size of a sent photo. Telegram sends several; the last is the largest.
+/// One size of a sent photo. Telegram sends several; the handler keeps the
+/// largest by dimensions rather than trusting the array order, which the Bot
+/// API does not promise.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PhotoSize {
